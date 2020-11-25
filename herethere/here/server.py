@@ -131,10 +131,20 @@ class SSHServerHere(asyncssh.SSHServer):
         return expected and (password == expected)
 
 
+def generate_private_key(path: str):
+    """Generate and save private key to a given location."""
+    asyncssh.generate_private_key("ssh-rsa").write_private_key(path)
+
+
 async def start_server(
     config: ServerConfig, namespace: dict = None
 ) -> asyncio.AbstractServer:
     """Start SSH server."""
+
+    if not os.path.exists(config.key_path):
+        logger.info("Generating new private key.")
+        generate_private_key(config.key_path)
+
     logger.debug(
         "start_server host=%s port=%s chroot=%s",
         config.host,

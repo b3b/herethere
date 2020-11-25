@@ -1,7 +1,10 @@
+from pathlib import Path
 import os
 
 import asyncssh
 import pytest
+
+from herethere.here import start_server
 
 
 def test_server_is_serving(server_instance):
@@ -82,3 +85,15 @@ async def test_sftp_file_uploaded(
             await sftp.put("tests/hello.txt", "hello_remote.txt")
 
     assert os.path.exists(expected_path)
+
+
+@pytest.mark.asyncio
+async def test_new_key_generated_if_not_exist(tmpdir, server_config):
+    path = Path(tmpdir) / "test_key_do_not_exist.rsa"
+    assert not os.path.exists(path)
+    server_config.key_path = path
+
+    server_instance = await start_server(server_config)
+
+    assert os.path.exists(path)
+    assert server_instance.is_serving()
