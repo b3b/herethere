@@ -1,4 +1,4 @@
-"""everywhere.code"""
+"""herethere.everywhere.code"""
 from code import InteractiveInterpreter
 from contextlib import redirect_stdout, redirect_stderr
 from io import StringIO
