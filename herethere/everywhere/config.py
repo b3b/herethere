@@ -1,4 +1,4 @@
-"""everywhere.config"""
+"""herethere.everywhere.config"""
 from dataclasses import asdict, dataclass, fields
 import os
 from os import environ
@@ -54,8 +54,10 @@ class ConnectionConfig:
                     for field in fields(cls)
                 )
             )
-        except KeyError:
-            raise ConnectionConfigError("Connection is not configured.") from None
+        except KeyError as exc:
+            raise ConnectionConfigError(
+                f"Connection is not configured: {exc} is not set."
+            ) from None
 
     def save(self, path: str, prefix: str = ""):
         """Save config to the given location."""

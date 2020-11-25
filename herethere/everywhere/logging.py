@@ -1,4 +1,4 @@
 """herethere.everywhere.logging"""
 import logging
 
-logger = logging.getLogger('herethere')
+logger = logging.getLogger("herethere")

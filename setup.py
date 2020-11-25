@@ -18,6 +18,7 @@ setup(
     author="b3b",
     author_email="ash.b3b@gmail.com",
     install_requires=[
+        "asyncssh",
         "python-dotenv",
     ],
     extras_require={
@@ -28,6 +29,7 @@ setup(
             "flake8",
             "pylint",
             "pytest",
+            "pytest-asyncio",
             "pytest-cov",
             "pytest-mock",
         ],
