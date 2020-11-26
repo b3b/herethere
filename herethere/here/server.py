@@ -87,6 +87,8 @@ async def handle_client(process: asyncssh.SSHServerProcess, namespace: dict):
         return
 
     await processor(process, namespace=namespace)
+    await process.stdout.drain()
+    await process.stderr.drain()
     process.exit(0)
 
 
