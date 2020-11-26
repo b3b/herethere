@@ -46,3 +46,11 @@ def client_instance(connection_config):
 def tmp_environ(mocker):
     mocker.patch.dict("os.environ", {}, clear=True)
     return environ
+
+
+@pytest.fixture
+async def there(server_instance, connection_config):
+    from herethere import there
+    client = there.Client()
+    await client.connect(connection_config)
+    yield client
