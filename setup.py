@@ -22,6 +22,10 @@ setup(
         "python-dotenv",
     ],
     extras_require={
+        "magic": [
+            "ipython",
+            "ipywidgets",
+        ],
         "dev": [
             "black",
             "codecov",

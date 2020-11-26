@@ -95,5 +95,9 @@ async def test_new_key_generated_if_not_exist(tmpdir, server_config):
 
     server_instance = await start_server(server_config)
 
-    assert os.path.exists(path)
-    assert server_instance.is_serving()
+    try:
+        assert os.path.exists(path)
+        assert server_instance.is_serving()
+    finally:
+        server_instance.close()
+        await server_instance.wait_closed()
