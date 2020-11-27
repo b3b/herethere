@@ -70,6 +70,15 @@ class Client:
         """Connect to remote."""
         await self.connection.configure(config)
 
+    async def shell(self, code: str) -> str:
+        """Execute shell command on remote side."""
+        async with self.connection as ssh:
+            result = await ssh.run("shell", check=True, input=code)
+        if result.stderr:
+            sys.stderr.write(result.stderr)
+        if result.stdout:
+            sys.stdout.write(result.stdout)
+
     async def runcode(self, code: str) -> str:
         """Execute code on remote side."""
         async with self.connection as ssh:
@@ -80,7 +89,7 @@ class Client:
             sys.stdout.write(result.stdout)
 
     async def upload(self, localpaths: List[str], remotepath) -> str:
-        """Upload files to remote via SFTP."""
+        """Upload files and directories to remote via SFTP."""
         async with self.connection as ssh:
             async with ssh.start_sftp_client() as sftp:
                 await sftp.put(

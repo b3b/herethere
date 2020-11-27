@@ -25,5 +25,24 @@ async def test_connected(server_instance, tmp_environ):
 async def test_code_executed(connected_there):
     out = StringIO()
     with redirect_stdout(out):
-        connected_there.runcode("print('hello')")
+        connected_there.there("", "print('hello')")
     assert out.getvalue() == "hello\n"
+
+
+@pytest.mark.parametrize(
+    "line, code, expected_args, expected_code",
+    (
+        ["", "print(1)", [], "print(1)"],
+        ["shell", "echo 1", ["shell"], "echo 1"],
+        ["upload tests/hello.txt dst", "", ["upload", "tests/hello.txt", "dst"], ""],
+        ["upload src1 src2 dst", "", ["upload", "src1", "src2", "dst"], ""],
+    ),
+)
+def test_there_command_called(
+    mocker, connected_there, line, code, expected_args, expected_code
+):
+    command = mocker.patch("herethere.there.magic.there_group")
+    connected_there.there(line, code)
+    command.assert_called_once()
+    assert command.call_args[0][0] == expected_args
+    assert command.call_args[1]["obj"].code == expected_code

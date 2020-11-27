@@ -52,7 +52,7 @@ async def handle_background_code_command(
 async def handle_shell_command(
     process: asyncssh.SSHServerProcess, namespace: dict
 ):  # pylint: disable=unused-argument
-    """Handler for SSH command 'background': execute shell command.
+    """Handler for SSH command 'shell': execute shell command.
     Do not blocks main thread execution.
     """
     command = await process.stdin.read(MAX_COMMAND_LENGTH)

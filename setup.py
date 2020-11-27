@@ -19,6 +19,7 @@ setup(
     author_email="ash.b3b@gmail.com",
     install_requires=[
         "asyncssh",
+        "click",
         "python-dotenv",
     ],
     extras_require={

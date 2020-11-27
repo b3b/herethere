@@ -1,11 +1,13 @@
 import asyncssh
 from os import environ
 
+import nest_asyncio
 import pytest
 
 from herethere.everywhere import ConnectionConfig
 from herethere.here import start_server
 from herethere.here.config import ServerConfig
+from herethere.there.client import Client
 
 
 @pytest.fixture
@@ -50,7 +52,11 @@ def tmp_environ(mocker):
 
 @pytest.fixture
 async def there(server_instance, connection_config):
-    from herethere import there
-    client = there.Client()
+    client = Client()
     await client.connect(connection_config)
     yield client
+
+
+@pytest.fixture
+def nested_event_loop(event_loop):
+    nest_asyncio.apply()

@@ -12,7 +12,8 @@ from IPython.core.magic import (
 
 from herethere.everywhere import ConnectionConfig
 from herethere.everywhere.magic import MagicEverywhere
-from herethere.there import Client
+from herethere.there.client import Client
+from herethere.there.commands import ContextObject, there_group
 
 
 @magics_class
@@ -22,7 +23,6 @@ class MagicThere(MagicEverywhere):
     def __init__(self, shell):
         super().__init__(shell)
         self.client = Client()
-        self.last_output = ""
 
     @line_magic("connect-there")
     @magic_arguments.magic_arguments()
@@ -39,7 +39,12 @@ class MagicThere(MagicEverywhere):
         asyncio.run(self.client.connect(config))
 
     @cell_magic("there")
-    def runcode(self, line, cell="") -> str:
-        """Execute cell code on remote side."""
-        code = "\n".join((line, cell))
-        self.last_output = asyncio.run(self.client.runcode(code))
+    def there(self, line, cell="") -> str:
+        """Execute command on remote side."""
+        # pylint: disable=too-many-function-args,unexpected-keyword-arg
+        there_group(
+            line.split(),
+            "there",
+            standalone_mode=False,
+            obj=ContextObject(self.client, cell),
+        )
