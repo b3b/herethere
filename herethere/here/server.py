@@ -33,7 +33,7 @@ async def handle_code_command(process: asyncssh.SSHServerProcess, namespace: dic
 async def handle_background_code_command(
     process: asyncssh.SSHServerProcess, namespace: dict
 ):
-    """Handler for SSH command 'background': execute code in a separate thead.
+    """Handler for SSH command 'background': execute code in a separate thread.
     Do not blocks main thread execution.
     """
     data = await process.stdin.read(MAX_COMMAND_LENGTH)
@@ -57,10 +57,13 @@ async def handle_shell_command(
     """
     command = await process.stdin.read(MAX_COMMAND_LENGTH)
     proc = subprocess.Popen(
-        command, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE
+        command,
+        shell=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        bufsize=0,
     )
     await process.redirect(stdout=proc.stdout, stderr=proc.stderr)
-    await process.stdout.drain()
 
 
 async def handle_client(process: asyncssh.SSHServerProcess, namespace: dict):
