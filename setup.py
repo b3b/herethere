@@ -4,7 +4,6 @@ main_ns = {}
 with open(convert_path("herethere/herethere_version.py")) as ver_file:
     exec(ver_file.read(), main_ns)
     version = main_ns["__version__"]
-    assert version and version != "dev", "Version is not set for release"
 
 with open(convert_path("README.rst")) as readme_file:
     long_description = readme_file.read()
