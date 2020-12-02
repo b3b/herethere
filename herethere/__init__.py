@@ -1,2 +1,2 @@
 """herethere"""
-from herethere.version import __version__  # noqa
+from herethere.herethere_version import __version__  # noqa
