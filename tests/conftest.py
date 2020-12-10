@@ -8,6 +8,7 @@ from herethere.everywhere import ConnectionConfig
 from herethere.here import start_server
 from herethere.here.config import ServerConfig
 from herethere.there.client import Client
+from herethere.there.commands import ContextObject, there_group
 
 
 @pytest.fixture
@@ -60,3 +61,16 @@ async def there(server_instance, connection_config):
 @pytest.fixture
 def nested_event_loop(event_loop):
     nest_asyncio.apply()
+
+
+@pytest.fixture
+def call_there_group(nested_event_loop, there):
+    def _callable(args, code):
+        there_group(
+            args,
+            "test",
+            standalone_mode=False,
+            obj=ContextObject(client=there, code=code),
+        )
+
+    return _callable

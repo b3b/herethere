@@ -1,7 +1,7 @@
-"""herethere.there.commands"""
+"""herethere.there.commands.core"""
 import asyncio
 from dataclasses import dataclass
-from typing import TextIO
+from typing import Callable, TextIO
 
 import click
 
@@ -91,3 +91,17 @@ def upload(ctx, localpaths, remotepath):
     if len(localpaths) == 1:
         localpaths = localpaths[0]
     asyncio.run(ctx.obj.client.upload(localpaths, remotepath))
+
+
+def there_code_shortcut(
+    handler: Callable[[str], str]
+) -> Callable[[click.Context], None]:
+    """Decorator to register %there subcommand to execute Python code."""
+
+    @there_group.command(handler.__name__)
+    @click.pass_context
+    def _wrapper(ctx):
+        ctx.obj.code = handler(ctx.obj.code)
+        ctx.obj.runcode()
+
+    return _wrapper

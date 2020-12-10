@@ -5,20 +5,13 @@ from pathlib import Path
 
 import pytest
 
-from herethere.there.commands import ContextObject, EmptyCode, NeedDisplay, there_group
-
-
-@pytest.fixture
-def call_there_group(nested_event_loop, there):
-    def _callable(args, code):
-        there_group(
-            args,
-            "test",
-            standalone_mode=False,
-            obj=ContextObject(client=there, code=code),
-        )
-
-    return _callable
+from herethere.there.commands.core import (
+    ContextObject,
+    EmptyCode,
+    NeedDisplay,
+    there_group,
+    there_code_shortcut,
+)
 
 
 def test_code_executed(call_there_group):
@@ -91,3 +84,14 @@ def test_multiple_files_uploaded_to_directory(tmpdir, call_there_group):
     for path in Path(tmpdir) / "hello.txt", Path(tmpdir) / "hello/there.txt":
         with open(path) as f:
             assert f.read() == "hello\n"
+
+
+def test_there_code_shortcut(call_there_group):
+    @there_code_shortcut
+    def _test_shortcut(ctx_obj):
+        return "print('hello from shortcut')"
+
+    out = StringIO()
+    with redirect_stdout(out):
+        call_there_group(["_test_shortcut"], ...)
+        assert out.getvalue() == "hello from shortcut\n"
