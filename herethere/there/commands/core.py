@@ -106,6 +106,6 @@ def there_code_shortcut(
         ctx.obj.code = handler(ctx.obj.code, *args, **kwargs)
         ctx.obj.runcode()
 
-    _wrapper.__click_params__ = getattr(handler, '__click_params__', [])
+    _wrapper.__click_params__ = getattr(handler, "__click_params__", [])
 
     return _wrapper
