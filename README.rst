@@ -16,4 +16,4 @@ herethere
     :alt: Code coverage Status
 .. end-badges
 
-TODO
+Library for interactive code execution on a remote machine via SSH.

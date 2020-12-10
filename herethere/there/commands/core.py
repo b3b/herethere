@@ -1,6 +1,7 @@
 """herethere.there.commands.core"""
 import asyncio
 from dataclasses import dataclass
+from functools import wraps
 from typing import Callable, TextIO
 
 import click
@@ -100,8 +101,11 @@ def there_code_shortcut(
 
     @there_group.command(handler.__name__)
     @click.pass_context
-    def _wrapper(ctx):
-        ctx.obj.code = handler(ctx.obj.code)
+    @wraps(handler)
+    def _wrapper(ctx, *args, **kwargs):
+        ctx.obj.code = handler(ctx.obj.code, *args, **kwargs)
         ctx.obj.runcode()
+
+    _wrapper.__click_params__ = getattr(handler, '__click_params__', [])
 
     return _wrapper

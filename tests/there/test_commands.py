@@ -3,6 +3,7 @@ from io import StringIO
 import os
 from pathlib import Path
 
+import click
 import pytest
 
 from herethere.there.commands.core import (
@@ -87,11 +88,17 @@ def test_multiple_files_uploaded_to_directory(tmpdir, call_there_group):
 
 
 def test_there_code_shortcut(call_there_group):
+
     @there_code_shortcut
-    def _test_shortcut(ctx_obj):
+    @click.option("-s", "--some-option")
+    @click.argument("somearg")
+    def _test_shortcut(code, somearg, some_option):
+        assert code is ...
+        assert some_option is None
+        assert somearg == 'arg value test'
         return "print('hello from shortcut')"
 
     out = StringIO()
     with redirect_stdout(out):
-        call_there_group(["_test_shortcut"], ...)
+        call_there_group(["_test_shortcut", "arg value test"], ...)
         assert out.getvalue() == "hello from shortcut\n"
