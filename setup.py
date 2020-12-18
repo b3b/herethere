@@ -34,6 +34,7 @@ setup(
         "magic": [
             "ipython",
             "ipywidgets",
+            "nest_asyncio",
         ],
         "dev": [
             "black",
@@ -54,7 +55,7 @@ setup(
         "Programming Language :: Python :: 3.7",
         "Programming Language :: Python :: 3.8",
     ],
-    keywords="android magic ipython jupyter",
+    keywords="SSH magic ipython jupyter",
     license="MIT",
     zip_safe=False,
 )
