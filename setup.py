@@ -28,12 +28,14 @@ setup(
     install_requires=[
         "asyncssh",
         "click",
-        "ipython",
-        "ipywidgets",
-        "nest_asyncio",
         "python-dotenv",
     ],
     extras_require={
+        "magic": [
+            "ipython",
+            "ipywidgets",
+            "nest_asyncio",
+        ],
         "dev": [
             "black",
             "codecov",
