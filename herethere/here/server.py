@@ -142,9 +142,14 @@ def generate_private_key(path: str):
 
 
 async def start_server(
-    config: ServerConfig, namespace: dict = None
+    config: ServerConfig,
+    namespace: dict = None,
+    server_factory: SSHServerHere = SSHServerHere,
 ) -> asyncio.AbstractServer:
     """Start SSH server."""
+
+    if not issubclass(server_factory, SSHServerHere):
+        raise TypeError("server_factory must be a SSHServerHere sublcass.")
 
     if not os.path.exists(config.key_path):
         logger.info("Generating new private key.")
@@ -161,7 +166,7 @@ async def start_server(
         port=config.port,
         server_host_keys=[config.key_path],
         server_factory=partial(
-            SSHServerHere, username=config.username, password=config.password
+            server_factory, username=config.username, password=config.password
         ),
         process_factory=partial(handle_client, namespace=namespace),
         sftp_factory=config.chroot and partial(SFTPServerHere, chroot=config.chroot),

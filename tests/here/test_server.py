@@ -4,7 +4,7 @@ import os
 import asyncssh
 import pytest
 
-from herethere.here import start_server
+from herethere.here.server import SSHServerHere, start_server
 
 
 def test_server_is_serving(server_instance):
@@ -101,3 +101,28 @@ async def test_new_key_generated_if_not_exist(tmpdir, server_config):
     finally:
         server_instance.close()
         await server_instance.wait_closed()
+
+
+class CustomSSHServerHere(SSHServerHere):
+
+    test_events = []
+
+    def connection_made(self, *args, **kwargs):
+        CustomSSHServerHere.test_events.append('connection_made')
+
+
+@pytest.mark.asyncio
+async def test_custom_server_class_used(server_config, connection_config):
+    assert not CustomSSHServerHere.test_events
+
+    await start_server(server_config, server_factory=CustomSSHServerHere)
+    async with asyncssh.connect(**connection_config.asdict, known_hosts=None):
+        pass
+
+    assert CustomSSHServerHere.test_events == ['connection_made']
+
+
+@pytest.mark.asyncio
+async def test_custom_server_class_bad_type(server_config):
+    with pytest.raises(TypeError):
+        await start_server(server_config, server_factory=object)
