@@ -34,14 +34,17 @@ class ContextObject:
         """Execute python code on the remote side."""
         if not self.code:
             raise EmptyCode("Code to execute is not specified.")
+        # prepend with "\n" so error message line matches cell line number
+        code = "# %%there ... \n" + self.code
+
         if self.stdout:
             asyncio.create_task(
                 self.client.runcode_background(
-                    self.code, stdout=self.stdout, stderr=self.stderr
+                    code, stdout=self.stdout, stderr=self.stderr
                 )
             )
         else:
-            asyncio.run(self.client.runcode(self.code))
+            asyncio.run(self.client.runcode(code))
 
     def shell(self):
         """Execute shell command on the remote side."""

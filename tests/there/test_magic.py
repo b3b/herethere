@@ -46,3 +46,9 @@ def test_there_command_called(
     command.assert_called_once()
     assert command.call_args[0][0] == expected_args
     assert command.call_args[1]["obj"].code == expected_code
+
+
+def test_error_line_number(capfd, connected_there):
+    connected_there.there("", "print 1")
+    captured = capfd.readouterr()
+    assert captured.err.strip().startswith('File "<string>", line 2\n')
