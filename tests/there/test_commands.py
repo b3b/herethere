@@ -7,12 +7,11 @@ import click
 import pytest
 
 from herethere.there.commands.core import (
-    ContextObject,
     EmptyCode,
     NeedDisplay,
-    there_group,
     there_code_shortcut,
 )
+from herethere.there.commands.log import log
 
 
 def test_code_executed(call_there_group):
@@ -102,3 +101,13 @@ def test_there_code_shortcut(call_there_group):
     with redirect_stdout(out):
         call_there_group(["_test_shortcut", "arg value test"], ...)
         assert out.getvalue() == "hello from shortcut\n"
+
+
+def test_log_command_ended(capfd, server_instance, call_there_group):
+    server_instance.namespace["ssh_server_closed"].set()
+
+    call_there_group(["log"], "")
+
+    captured = capfd.readouterr()
+    assert not captured.out
+    assert not captured.err

@@ -1,6 +1,7 @@
 """herethere.magic"""
 from herethere.here.magic import MagicHere
 from herethere.there.magic import MagicThere
+import herethere.there.commands.log  # noqa
 
 
 def load_ipython_extension(ipython):

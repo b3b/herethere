@@ -13,10 +13,13 @@ class RedirectedOutputWrapper:
         self._redirected_streams = {}
 
     def __getattr__(self, attr):
-        stream = self._redirected_streams.get(
+        return getattr(self._target_stream, attr)
+
+    @property
+    def _target_stream(self):
+        return self._redirected_streams.get(
             threading.get_ident(), self._original_stream
         )
-        return getattr(stream, attr)
 
     def register(self, stream: TextIO):
         """Start output redirection for current thread."""
