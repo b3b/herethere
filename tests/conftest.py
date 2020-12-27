@@ -36,8 +36,7 @@ async def server_instance(server_config):
         'test_variable_in_namespace': 'OK'
     })
     yield server
-    server.close()
-    await server.wait_closed()
+    await server.stop()
 
 
 @pytest.fixture

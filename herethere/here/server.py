@@ -3,6 +3,7 @@ import asyncio
 from functools import partial
 import os
 import subprocess
+import threading
 from typing import Optional
 
 import asyncssh
@@ -136,6 +137,24 @@ class SSHServerHere(asyncssh.SSHServer):
         return expected and (password == expected)
 
 
+class RunningServer:
+    """Wrapper for a running SSH server instance."""
+
+    def __init__(self, server: asyncio.AbstractServer, namespace):
+        self.server = server
+        self.namespace = namespace
+        self.namespace["ssh_server_closed"] = threading.Event()
+
+    def __getattr__(self, attr):
+        return getattr(self.server, attr)
+
+    async def stop(self):
+        """Stop SSH server."""
+        self.namespace["ssh_server_closed"].set()
+        self.server.close()
+        await self.server.wait_closed()
+
+
 def generate_private_key(path: str):
     """Generate and save private key to a given location."""
     asyncssh.generate_private_key("ssh-rsa").write_private_key(path)
@@ -145,7 +164,7 @@ async def start_server(
     config: ServerConfig,
     namespace: dict = None,
     server_factory: SSHServerHere = SSHServerHere,
-) -> asyncio.AbstractServer:
+) -> RunningServer:
     """Start SSH server."""
 
     if not issubclass(server_factory, SSHServerHere):
@@ -155,13 +174,16 @@ async def start_server(
         logger.info("Generating new private key.")
         generate_private_key(config.key_path)
 
+    if namespace is None:
+        namespace = {}
+
     logger.debug(
         "start_server host=%s port=%s chroot=%s",
         config.host,
         config.port,
         config.chroot,
     )
-    return await asyncssh.create_server(
+    server = await asyncssh.create_server(
         host=config.host,
         port=config.port,
         server_host_keys=[config.key_path],
@@ -171,3 +193,4 @@ async def start_server(
         process_factory=partial(handle_client, namespace=namespace),
         sftp_factory=config.chroot and partial(SFTPServerHere, chroot=config.chroot),
     )
+    return RunningServer(server, namespace)

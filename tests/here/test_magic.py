@@ -9,5 +9,4 @@ async def test_server_is_started(event_loop, tmp_environ):
 
     server = magic.server
     assert server.is_serving()
-    server.close()
-    await server.wait_closed()
+    await server.stop()
