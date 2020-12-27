@@ -1,8 +1,9 @@
 """herethere.everywhere.code"""
 from code import InteractiveInterpreter
-from contextlib import redirect_stdout, redirect_stderr
 from io import StringIO
 from typing import Dict, Optional, TextIO
+
+from herethere.everywhere.redirected_output import redirect_output
 
 
 def runcode(
@@ -23,9 +24,8 @@ def runcode(
     if namespace is None:
         namespace = {}
 
-    with redirect_stderr(stderr):
-        with redirect_stdout(stdout):
-            InteractiveInterpreter(locals=namespace).runcode(code)
+    with redirect_output(stdout=stdout, stderr=stderr):
+        InteractiveInterpreter(locals=namespace).runcode(code)
 
     if should_return_value:
         if stderr == stdout:
