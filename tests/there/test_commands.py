@@ -38,6 +38,13 @@ def test_background_display_max_lines_applied(call_there_group):
     assert exc.value.maxlen == 100
 
 
+def test_execution_delayed(capfd, mocker, call_there_group):
+    sleep = mocker.patch("time.sleep")
+    call_there_group(["--delay", "100.5"], "print('hello')")
+    sleep.assert_called_once_with(100.5)
+    assert capfd.readouterr().out == "hello\n"
+
+
 def test_shell_command_executed(call_there_group):
     out = StringIO()
     with redirect_stdout(out):

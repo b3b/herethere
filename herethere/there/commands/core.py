@@ -2,6 +2,7 @@
 import asyncio
 from dataclasses import dataclass
 from functools import wraps
+import time
 from typing import Callable, TextIO
 
 import click
@@ -72,13 +73,22 @@ class ContextObject:
     type=click.IntRange(1, 1000),
     help="Number of lines to show when in background mode",
 )
+@click.option(
+    "-d",
+    "--delay",
+    type=float,
+    default=0,
+    help="The time to wait in seconds before executing a command.",
+)
 @click.pass_context
-def there_group(ctx, background, limit):
+def there_group(ctx, background, limit, delay):
     """Group of commands to run on remote side."""
     if background:
         if not all((ctx.obj.stdout, ctx.obj.stderr)):
             raise NeedDisplay(limit)
         ctx.obj.background = True
+    if delay:
+        time.sleep(delay)
     if ctx.invoked_subcommand is None:
         # Execute python code if no command specified
         ctx.obj.runcode()
