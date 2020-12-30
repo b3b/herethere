@@ -29,6 +29,7 @@ class ContextObject:
     code: str
     stdout: TextIO = None
     stderr: TextIO = None
+    background: bool = False
 
     def runcode(self):
         """Execute python code on the remote side."""
@@ -37,14 +38,16 @@ class ContextObject:
         # prepend with "\n" so error message line matches cell line number
         code = "# %%there ... \n" + self.code
 
-        if self.stdout:
+        if self.background:
             asyncio.create_task(
                 self.client.runcode_background(
                     code, stdout=self.stdout, stderr=self.stderr
                 )
             )
         else:
-            asyncio.run(self.client.runcode(code))
+            asyncio.run(
+                self.client.runcode(code, stdout=self.stdout, stderr=self.stderr)
+            )
 
     def shell(self):
         """Execute shell command on the remote side."""
@@ -72,8 +75,10 @@ class ContextObject:
 @click.pass_context
 def there_group(ctx, background, limit):
     """Group of commands to run on remote side."""
-    if background and not all((ctx.obj.stdout, ctx.obj.stderr)):
-        raise NeedDisplay(limit)
+    if background:
+        if not all((ctx.obj.stdout, ctx.obj.stderr)):
+            raise NeedDisplay(limit)
+        ctx.obj.background = True
     if ctx.invoked_subcommand is None:
         # Execute python code if no command specified
         ctx.obj.runcode()
