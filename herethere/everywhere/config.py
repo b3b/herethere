@@ -39,7 +39,7 @@ class ConnectionConfig:
     def load(cls, prefix: str = "", path: str = None) -> "ConnectionConfig":
         """Load config from the environment, or passed location, or guessed location."""
         if not path:
-            path = find_dotenv(f"{prefix}.env")
+            path = find_dotenv(f"{prefix}.env", usecwd=True)
         env = dotenv_values(dotenv_path=path)
         env.update(environ)
         return cls.load_from_dict(env=env, prefix=prefix)
