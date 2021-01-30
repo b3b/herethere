@@ -46,5 +46,7 @@ def redirect_output(stdout: TextIO, stderr: TextIO) -> Iterator[None]:
     try:
         yield
     finally:
-        sys.stdout.unregister()
-        sys.stderr.unregister()
+        if isinstance(sys.stdout, RedirectedOutputWrapper):
+            sys.stdout.unregister()
+        if isinstance(sys.stderr, RedirectedOutputWrapper):
+            sys.stderr.unregister()
