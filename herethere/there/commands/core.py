@@ -40,26 +40,35 @@ class ContextObject:
         code = "# %%there ... \n" + self.code
 
         if self.background:
-            asyncio.create_task(
-                self.client.runcode_background(
-                    code, stdout=self.stdout, stderr=self.stderr
-                )
-            )
+            self._run_background_command("runcode_background", code)
         else:
-            asyncio.run(
-                self.client.runcode(code, stdout=self.stdout, stderr=self.stderr)
-            )
+            self._run_command("runcode", code)
 
     def shell(self):
         """Execute shell command on the remote side."""
         if not self.code:
             raise EmptyCode("Code to execute is not specified.")
-        if self.stdout:
-            asyncio.create_task(
-                self.client.shell(self.code, stdout=self.stdout, stderr=self.stderr)
-            )
+
+        if self.background:
+            self._run_background_command("shell", self.code)
         else:
-            asyncio.run(self.client.shell(self.code))
+            self._run_command("shell", self.code)
+
+    def _run_command(self, command: str, code: str):
+        """Execute SSH command with a code."""
+        handler = getattr(self.client, command)
+        asyncio.run(handler(code, stdout=self.stdout, stderr=self.stderr))
+
+    def _run_background_command(self, command: str, code: str):
+        """Execute SSH command with a code, in background."""
+
+        async def run():
+            client = await self.client.copy()
+            handler = getattr(client, command)
+            await handler(code, stdout=self.stdout, stderr=self.stderr)
+            await client.disconnect()
+
+        asyncio.create_task(run())
 
 
 @click.group(invoke_without_command=True)
@@ -78,7 +87,7 @@ class ContextObject:
     "--delay",
     type=float,
     default=0,
-    help="The time to wait in seconds before executing a command.",
+    help="The time to wait in seconds before executing a command",
 )
 @click.pass_context
 def there_group(ctx, background, limit, delay):
@@ -115,7 +124,12 @@ def upload(ctx, localpaths, remotepath):
 def there_code_shortcut(
     handler: Callable[[str], str]
 ) -> Callable[[click.Context], None]:
-    """Decorator to register %there subcommand to execute Python code."""
+    """Decorator to register %there subcommand to execute Python code.
+
+    :param handler:
+        a function, that receives text from the Jupyter cell,
+        and returns Python code to execute on the remote side
+    """
 
     @there_group.command(handler.__name__)
     @click.pass_context

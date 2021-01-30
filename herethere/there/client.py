@@ -1,4 +1,5 @@
 """herethere.there.client"""
+from __future__ import annotations
 from contextlib import AbstractAsyncContextManager
 import sys
 from typing import List, Optional, TextIO
@@ -66,9 +67,19 @@ class Client:
     def __init__(self):
         self.connection = PersistentConnection()
 
+    async def copy(self) -> Client:
+        """Return a copy of the configured connection."""
+        client = Client()
+        await client.connect(self.connection.config)
+        return client
+
     async def connect(self, config: ConnectionConfig):
         """Connect to remote."""
         await self.connection.configure(config)
+
+    async def disconnect(self):
+        """Disconnect from the remote."""
+        self.connection.close()
 
     async def runcode(
         self,

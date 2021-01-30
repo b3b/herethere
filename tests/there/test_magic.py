@@ -4,6 +4,8 @@ from io import StringIO
 import pytest
 
 from herethere.magic import MagicThere
+from herethere.there.commands import NeedDisplay
+from herethere.there.output import LimitedOutput
 
 
 @pytest.fixture
@@ -52,3 +54,18 @@ def test_error_line_number(capfd, connected_there):
     connected_there.there("", "print 1")
     captured = capfd.readouterr()
     assert captured.err.strip().startswith('File "<string>", line 2\n')
+
+
+@pytest.mark.asyncio
+async def test_limited_output_created(mocker, connected_there):
+    command = mocker.patch(
+        "herethere.there.magic.there_group",
+        side_effect=NeedDisplay(maxlen=1)
+    )
+
+    with pytest.raises(NeedDisplay):
+        connected_there.there("-b", "print('hello')")
+
+    assert command.call_count == 2
+    ctx = command.call_args[1]["obj"]
+    assert isinstance(ctx.stdout, LimitedOutput)

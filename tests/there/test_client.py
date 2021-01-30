@@ -4,6 +4,8 @@ from pathlib import Path
 
 import pytest
 
+from herethere.there.client import Client
+
 
 @pytest.mark.asyncio
 async def test_line_executed(there):
@@ -47,3 +49,23 @@ async def test_file_uploaded(there, tmpdir):
     await there.upload("tests/hello.txt", "hello_remote.txt")
     with open(Path(tmpdir) / "hello_remote.txt") as f:
         assert f.read() == "hello\n"
+
+
+@pytest.mark.asyncio
+async def test_connection_copied(there):
+    connection = await there.copy()
+    assert connection.connection.config == there.connection.config
+
+
+@pytest.mark.asyncio
+async def test_connection_disconnected(there):
+    assert there.connection.connection
+    await there.disconnect()
+    assert not there.connection.connection
+
+
+@pytest.mark.asyncio
+async def test_exception_on_unconfigured_connection_copy():
+    client = Client()
+    with pytest.raises(Exception, match="Connection is not configured."):
+        await client.copy()
