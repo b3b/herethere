@@ -1,10 +1,11 @@
 """herethere.here.server"""
 import asyncio
+from concurrent.futures import ThreadPoolExecutor
 from functools import partial
 import os
 import subprocess
 import threading
-from typing import Optional
+from typing import Any, Callable, Optional
 
 import asyncssh
 
@@ -37,16 +38,14 @@ async def handle_background_code_command(
     """Handler for SSH command 'background': execute code in a separate thread.
     Do not blocks main thread execution.
     """
+    server: SSHServerHere = process.channel.get_connection().get_owner()
     data = await process.stdin.read(MAX_COMMAND_LENGTH)
-    await asyncio.get_event_loop().run_in_executor(
-        None,
-        partial(
-            runcode,
-            data,
-            stdout=process.stdout,
-            stderr=process.stderr,
-            namespace=namespace,
-        ),
+    await server.run_in_executor(
+        runcode,
+        code=data,
+        stdout=process.stdout,
+        stderr=process.stderr,
+        namespace=namespace,
     )
 
 
@@ -107,8 +106,9 @@ class SFTPServerHere(asyncssh.SFTPServer):
 class SSHServerHere(asyncssh.SSHServer):
     """SSH server protocol handler with `username` and `password` options."""
 
-    def __init__(self, username: str, password: str):
+    def __init__(self, username: str, password: str, executor: ThreadPoolExecutor):
         self.passwords = {username: password}
+        self.executor = executor
 
     def connection_made(self, conn: asyncssh.SSHServerConnection):
         """Called when a channel is opened successfully."""
@@ -136,12 +136,21 @@ class SSHServerHere(asyncssh.SSHServer):
         expected = self.passwords.get(username, None)
         return expected and (password == expected)
 
+    async def run_in_executor(self, func: Callable[..., Any], **kwargs: Any):
+        """Run func in the thead."""
+        await asyncio.get_event_loop().run_in_executor(
+            self.executor, partial(func, **kwargs)
+        )
+
 
 class RunningServer:
     """Wrapper for a running SSH server instance."""
 
-    def __init__(self, server: asyncio.AbstractServer, namespace):
+    def __init__(
+        self, server: asyncio.AbstractServer, namespace, executor: ThreadPoolExecutor
+    ):
         self.server = server
+        self.executor = executor
         self.namespace = namespace
         self.namespace["ssh_server_closed"] = threading.Event()
 
@@ -152,6 +161,7 @@ class RunningServer:
         """Stop SSH server."""
         self.namespace["ssh_server_closed"].set()
         self.server.close()
+        self.executor.shutdown(wait=False)
         await self.server.wait_closed()
 
 
@@ -177,6 +187,10 @@ async def start_server(
     if namespace is None:
         namespace = {}
 
+    executor = ThreadPoolExecutor(
+        max_workers=64, thread_name_prefix="SSHServerHereThread"
+    )
+
     logger.debug(
         "start_server host=%s port=%s chroot=%s",
         config.host,
@@ -188,9 +202,12 @@ async def start_server(
         port=config.port,
         server_host_keys=[config.key_path],
         server_factory=partial(
-            server_factory, username=config.username, password=config.password
+            server_factory,
+            username=config.username,
+            password=config.password,
+            executor=executor,
         ),
         process_factory=partial(handle_client, namespace=namespace),
         sftp_factory=config.chroot and partial(SFTPServerHere, chroot=config.chroot),
     )
-    return RunningServer(server, namespace)
+    return RunningServer(server=server, namespace=namespace, executor=executor)
