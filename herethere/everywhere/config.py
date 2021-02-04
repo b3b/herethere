@@ -37,7 +37,16 @@ class ConnectionConfig:
 
     @classmethod
     def load(cls, prefix: str = "", path: str = None) -> "ConnectionConfig":
-        """Load config from the environment, or passed location, or guessed location."""
+        """Load configuration from the environment, and file with
+        configurations variables.
+        If `path` is not specified, variables are loaded from a file named {prefix}.env
+        in the current directory or any of its parents.
+
+        :param prefix:
+            prefix for variables ({PREFIX}_HOST), and a configuration file name
+            to search for: {prefix}.env
+        :param path: explicit configuration file location
+        """
         if not path:
             path = find_dotenv(f"{prefix}.env", usecwd=True)
         env = dotenv_values(dotenv_path=path)

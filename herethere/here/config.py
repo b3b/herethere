@@ -5,7 +5,7 @@ from herethere.everywhere import ConnectionConfig
 
 @dataclass
 class ServerConfig(ConnectionConfig):
-    """Server configuration."""
+    """SSH server configuration."""
 
     key_path: str
     chroot: str

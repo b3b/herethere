@@ -16,4 +16,27 @@ herethere
     :alt: Code coverage Status
 .. end-badges
 
-Library for interactive code execution on a remote machine via SSH.
+An async Python library for interactive code execution on a remote machine via SSH.
+
+*herethere* is based on the `AsyncSSH <https://github.com/ronf/asyncssh>`_ library.
+
+:Code repository: https://github.com/b3b/herethere
+:Documentation: https://herethere.me/library
+
+Installation
+------------
+
+*herethere* can be installed from the PyPi::
+
+    pip install herethere[magic]
+
+
+The `magic` extension can be omitted if Jupyter magic commands will not be used.
+
+
+Related resources
+-----------------
+
+* `PythonHere <https://herethere.me/pythonhere>`_: application that uses *herethere* library
+* `Kivy Remote Shell <https://github.com/kivy/kivy-remote-shell>`_ : Remote SSH+Python interactive shell application (uses Twisted)
+* `Twisted Manhole <https://twistedmatrix.com/documents/8.1.0/api/twisted.manhole.html>`_: interactive interpreter and direct manipulation support for Twisted

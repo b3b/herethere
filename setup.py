@@ -48,7 +48,7 @@ setup(
             "pytest-mock",
         ],
     },
-    url="https://github.com/b3b/ipython-herethere",
+    url="https://github.com/b3b/herethere",
     # https://pypi.org/classifiers/
     classifiers=[
         "Development Status :: 2 - Pre-Alpha",

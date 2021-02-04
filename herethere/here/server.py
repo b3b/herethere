@@ -5,7 +5,7 @@ from functools import partial
 import os
 import subprocess
 import threading
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Optional, Type
 
 import asyncssh
 
@@ -173,9 +173,14 @@ def generate_private_key(path: str):
 async def start_server(
     config: ServerConfig,
     namespace: dict = None,
-    server_factory: SSHServerHere = SSHServerHere,
+    server_factory: Type[SSHServerHere] = SSHServerHere,
 ) -> RunningServer:
-    """Start SSH server."""
+    """Start SSH server.
+
+    :param config: server configuration options
+    :param namespace: dictionary in which Python code commands will be executed
+    :param server_factory: optional protocol handler class
+    """
 
     if not issubclass(server_factory, SSHServerHere):
         raise TypeError("server_factory must be a SSHServerHere sublcass.")
