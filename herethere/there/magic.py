@@ -1,5 +1,6 @@
 """there.magic"""
 import asyncio
+import shlex
 
 from IPython.core import magic_arguments
 from IPython.core.magic_arguments import parse_argstring
@@ -48,7 +49,7 @@ class MagicThere(MagicEverywhere):
         def run(obj):
             # pylint: disable=no-value-for-parameter
             there_group(
-                line.split(),
+                shlex.split(line),
                 "there",
                 standalone_mode=False,
                 obj=obj,

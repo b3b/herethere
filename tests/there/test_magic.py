@@ -37,6 +37,7 @@ async def test_code_executed(connected_there):
         ["", "print(1)", [], "print(1)"],
         ["shell", "echo 1", ["shell"], "echo 1"],
         ["upload tests/hello.txt dst", "", ["upload", "tests/hello.txt", "dst"], ""],
+        ["upload tests/'hello there.txt' dst", "", ["upload", "tests/hello there.txt", "dst"], ""],
         ["upload src1 src2 dst", "", ["upload", "src1", "src2", "dst"], ""],
     ),
 )
