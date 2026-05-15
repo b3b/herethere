@@ -2,13 +2,14 @@ from contextlib import redirect_stdout
 from io import StringIO
 
 import pytest
+import pytest_asyncio
 
 from herethere.magic import MagicThere
 from herethere.there.commands import NeedDisplay
 from herethere.there.output import LimitedOutput
 
 
-@pytest.fixture
+@pytest_asyncio.fixture
 async def connected_there(server_instance):
     magic = MagicThere(shell=None)
     magic.connect("tests/there.env")

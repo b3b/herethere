@@ -7,7 +7,8 @@ import pytest
 from herethere.here.server import SSHServerHere, start_server
 
 
-def test_server_is_serving(server_instance):
+@pytest.mark.asyncio
+async def test_server_is_serving(server_instance):
     assert server_instance.is_serving()
     assert server_instance
 

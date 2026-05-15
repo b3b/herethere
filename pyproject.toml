@@ -69,6 +69,10 @@ version = { attr = "herethere.version.__version__" }
 [tool.setuptools.packages.find]
 include = ["herethere*"]
 
+[tool.pytest.ini_options]
+asyncio_mode = "strict"
+asyncio_default_fixture_loop_scope = "function"
+
 [tool.pylint.main]
 fail-under = 10.0
 ignore = ["migrations"]

@@ -4,6 +4,7 @@ from os import environ
 
 import nest_asyncio
 import pytest
+import pytest_asyncio
 
 from herethere.everywhere import ConnectionConfig
 from herethere.here import start_server
@@ -34,7 +35,7 @@ def server_config(tmpdir, connection_config):
     )
 
 
-@pytest.fixture
+@pytest_asyncio.fixture
 async def server_instance(server_config):
     server = await start_server(server_config, namespace={
         'test_variable_in_namespace': 'OK'
@@ -54,7 +55,7 @@ def tmp_environ(mocker):
     return environ
 
 
-@pytest.fixture
+@pytest_asyncio.fixture
 async def there(server_instance, connection_config):
     client = Client()
     await client.connect(connection_config)
