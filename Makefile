@@ -8,6 +8,8 @@ test: sync
 
 lint: sync
 	uv run ruff check herethere tests
+	uv run ruff format --check herethere tests
+	uv run pylint herethere
 
 format: sync
 	uv run ruff format herethere tests

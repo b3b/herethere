@@ -48,11 +48,9 @@ magic = [
 
 [dependency-groups]
 dev = [
-    "black",
     "build",
     "codecov",
     "docutils",
-    "flake8",
     "pylint",
     "pytest",
     "pytest-asyncio",
@@ -70,3 +68,62 @@ version = { attr = "herethere.version.__version__" }
 
 [tool.setuptools.packages.find]
 include = ["herethere*"]
+
+[tool.pylint.main]
+fail-under = 10.0
+ignore = ["migrations"]
+py-version = "3.10"
+
+[tool.pylint."messages control"]
+disable = [
+  "attribute-defined-outside-init",
+  "bad-inline-option",
+  "deprecated-pragma",
+  "file-ignored",
+  "import-outside-toplevel",
+  "invalid-name",
+  "locally-disabled",
+  "missing-function-docstring",
+  "missing-module-docstring",
+  "protected-access",
+  "raw-checker-failed",
+  "redefined-outer-name",
+  "suppressed-message",
+  "too-few-public-methods",
+  "unused-argument",
+  "unused-wildcard-import",
+  "use-symbolic-message-instead",
+  "useless-suppression",
+  "wildcard-import",
+]
+enable = ["c-extension-no-member"]
+
+[tool.ruff]
+line-length = 88
+target-version = "py310"
+
+[tool.ruff.lint]
+select = [
+    "E",    # pycodestyle errors
+    "F",    # pyflakes
+    "W",    # pycodestyle warnings
+    "I",    # import sorting
+    "UP",   # pyupgrade
+    "B",    # flake8-bugbear
+    "TRY",  # exception handling checks
+    "PL",   # pylint-style checks supported by Ruff
+]
+ignore = [
+    "TRY003", # allow direct exception messages in this small library
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**/*.py" = [
+    "PLR0913", # parametrized tests naturally pass several fixtures/values
+    "PLR2004", # literal expected values are readable in tests
+    "PLW0603", # tests may intentionally exercise global namespace behavior
+]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
