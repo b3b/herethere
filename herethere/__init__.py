@@ -1,2 +1,4 @@
 """herethere"""
-from herethere.herethere_version import __version__  # noqa
+from herethere.version import __version__
+
+__all__ = ("__version__",)

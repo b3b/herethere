@@ -17,7 +17,8 @@ async def connected_there(server_instance):
 
 
 @pytest.mark.asyncio
-async def test_connected(server_instance, tmp_environ):
+async def test_connected(server_instance, connection_config, tmp_environ):
+    tmp_environ["THERE_PORT"] = str(connection_config.port)
     magic = MagicThere(shell=None)
     magic.connect("tests/there.env")
     assert magic.client.connection

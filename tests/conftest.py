@@ -1,3 +1,4 @@
+import asyncio
 import asyncssh
 from os import environ
 
@@ -12,13 +13,16 @@ from herethere.there.commands import ContextObject, there_group
 
 
 @pytest.fixture
-def connection_config():
-    return ConnectionConfig(
+def connection_config(monkeypatch, unused_tcp_port):
+    config = ConnectionConfig(
         host='localhost',
-        port=9022,
+        port=unused_tcp_port,
         username='here',
         password='there',
     )
+    monkeypatch.setenv("HERE_PORT", str(config.port))
+    monkeypatch.setenv("THERE_PORT", str(config.port))
+    return config
 
 
 @pytest.fixture
@@ -55,6 +59,13 @@ async def there(server_instance, connection_config):
     client = Client()
     await client.connect(connection_config)
     yield client
+
+
+@pytest.fixture
+def event_loop():
+    loop = asyncio.new_event_loop()
+    yield loop
+    loop.close()
 
 
 @pytest.fixture
