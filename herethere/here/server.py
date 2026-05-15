@@ -72,9 +72,17 @@ async def handle_client(process: asyncssh.SSHServerProcess, namespace: dict):
     if namespace is None:
         namespace = {}
 
-    if process.channel._editor:  # pylint: disable=protected-access
-        process.channel.set_echo(False)
-        process.stdin.channel.set_line_mode(True)
+    channel = process.channel
+    stdin_channel = process.stdin.channel
+    # Configure terminal input only for PTY sessions, where AsyncSSH line
+    # editor echo and line-mode controls are meaningful.
+    if (
+        process.get_terminal_type()
+        and hasattr(channel, "set_echo")
+        and hasattr(stdin_channel, "set_line_mode")
+    ):
+        channel.set_echo(False)
+        stdin_channel.set_line_mode(True)
 
     try:
         processor = {
