@@ -1,0 +1,70 @@
+[build-system]
+requires = ["setuptools>=70", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "herethere"
+dynamic = ["version"]
+description = "herethere"
+readme = { file = "README.rst", content-type = "text/x-rst" }
+requires-python = ">=3.10"
+authors = [
+    { name = "b3b", email = "ash.b3b@gmail.com" },
+]
+license = "MIT"
+keywords = [
+    "ssh",
+    "asyncssh",
+    "jupyter",
+    "ipython",
+    "ipython-magic",
+    "jupyter-magic",
+    "remote-python",
+    "remote-repl",
+    "remote-debugging",
+    "repl",
+    "developer-tools",
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+]
+dependencies = [
+    "asyncssh>=2.17,<3",
+    "click",
+    "python-dotenv",
+]
+
+[project.optional-dependencies]
+magic = [
+    "ipython",
+    "ipywidgets",
+    "nest_asyncio",
+]
+
+[dependency-groups]
+dev = [
+    "black",
+    "build",
+    "codecov",
+    "docutils",
+    "flake8",
+    "pylint",
+    "pytest",
+    "pytest-asyncio",
+    "pytest-cov",
+    "pytest-mock",
+]
+
+[project.urls]
+Homepage = "https://github.com/b3b/herethere"
+
+[tool.setuptools.dynamic]
+version = { attr = "herethere.herethere_version.__version__" }
+
+[tool.setuptools.packages.find]
+include = ["herethere*"]
