@@ -1,4 +1,3 @@
-import asyncio
 import shutil
 import subprocess
 import sys
@@ -111,13 +110,6 @@ async def there(server_instance, connection_config):
     await client.connect(connection_config)
     yield client
     await client.disconnect()
-
-
-@pytest.fixture
-def event_loop():
-    loop = asyncio.new_event_loop()
-    yield loop
-    loop.close()
 
 
 @pytest.fixture
