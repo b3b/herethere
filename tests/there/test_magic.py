@@ -10,26 +10,27 @@ from herethere.there.output import LimitedOutput
 
 
 @pytest_asyncio.fixture
-async def connected_there(server_instance):
+async def connected_there(server_instance, connection_config):
     magic = MagicThere(shell=None)
-    magic.connect("tests/there.env")
+    await magic.client.connect(connection_config)
     assert magic.client.connection
     yield magic
+    await magic.client.disconnect()
 
 
 @pytest.mark.asyncio
 async def test_connected(server_instance, connection_config, tmp_environ):
     tmp_environ["THERE_PORT"] = str(connection_config.port)
     magic = MagicThere(shell=None)
-    magic.connect("tests/there.env")
+    await magic.client.connect(connection_config)
     assert magic.client.connection
+    await magic.client.disconnect()
 
 
-@pytest.mark.asyncio
-async def test_code_executed(connected_there):
+def test_code_executed(call_there_group):
     out = StringIO()
     with redirect_stdout(out):
-        connected_there.there("", "print('hello')")
+        call_there_group([], "print('hello')")
     assert out.getvalue() == "hello\n"
 
 
@@ -52,8 +53,8 @@ def test_there_command_called(
     assert command.call_args[1]["obj"].code == expected_code
 
 
-def test_error_line_number(capfd, connected_there):
-    connected_there.there("", "print 1")
+def test_error_line_number(capfd, call_there_group):
+    call_there_group([], "print 1")
     captured = capfd.readouterr()
     assert 'File "<string>", line 2\n' in captured.err
     assert "SyntaxError:" in captured.err

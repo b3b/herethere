@@ -17,6 +17,11 @@ class RedirectedOutputWrapper:
     def __getattr__(self, attr):
         return getattr(self._target_stream, attr)
 
+    def flush(self):
+        """Flush the target stream when it supports flushing."""
+        if hasattr(self._target_stream, "flush"):
+            self._target_stream.flush()
+
     @property
     def _target_stream(self):
         return self._redirected_streams.get(

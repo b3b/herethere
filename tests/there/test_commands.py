@@ -6,6 +6,7 @@ from pathlib import Path
 import click
 import pytest
 
+import herethere.there.commands.log  # noqa: F401
 from herethere.there.commands.core import (
     EmptyCode,
     NeedDisplay,

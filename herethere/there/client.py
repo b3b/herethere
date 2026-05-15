@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import sys
 from contextlib import AbstractAsyncContextManager
 from typing import TextIO
@@ -150,9 +152,30 @@ class Client:
         async with self.connection as ssh:
             async with ssh.create_process(command) as process:
                 process.stdin.write(code)
-                line = True
-                while line:
-                    line = await process.stdout.readline()
-                    if line:
-                        stdout.write(line)
-                stderr.write(await process.stderr.read())
+                # Remote handlers read the submitted code from stdin. Signal
+                # end-of-input so they can start or finish execution instead
+                # of waiting for more code.
+                process.stdin.write_eof()
+
+                async def forward_output(reader, writer):
+                    # Stream line-by-line for long-running commands such as
+                    # `%there log`. readline() also returns the final partial
+                    # line at EOF, so output without a trailing newline is kept.
+                    while data := await reader.readline():
+                        writer.write(data)
+                        if hasattr(writer, "flush"):
+                            writer.flush()
+
+                try:
+                    await asyncio.gather(
+                        forward_output(process.stdout, stdout),
+                        forward_output(process.stderr, stderr),
+                    )
+                    await process.wait()
+                except asyncio.CancelledError:
+                    process.terminate()
+                    # Try to close the remote channel cleanly, but keep
+                    # cancellation bounded from the caller's perspective.
+                    with contextlib.suppress(Exception):
+                        await asyncio.wait_for(process.wait(), timeout=1)
+                    raise

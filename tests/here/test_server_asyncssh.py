@@ -38,7 +38,7 @@ class RecordingInput:
         self.channel = channel
         self.events = events
 
-    async def read(self, max_len):
+    async def read(self, max_len=-1):
         self.events.append(("read", max_len))
         return "print('pong')"
 

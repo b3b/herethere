@@ -10,4 +10,5 @@ class MagicEverywhere(Magics, Configurable):
 
     def __init__(self, shell):
         super().__init__(shell)
-        nest_asyncio.apply()
+        if shell is not None:
+            nest_asyncio.apply()
