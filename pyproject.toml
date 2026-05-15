@@ -42,7 +42,7 @@ dependencies = [
 magic = [
     "ipython",
     "ipywidgets",
-    "nest_asyncio",
+    "nest-asyncio2==1.7.2",
 ]
 
 [dependency-groups]
