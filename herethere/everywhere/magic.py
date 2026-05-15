@@ -1,7 +1,7 @@
 """herethere.everywhere.magic"""
 
-from IPython.core.magic import Magics
 from IPython.core.interactiveshell import InteractiveShell
+from IPython.core.magic import Magics
 from traitlets.config.configurable import Configurable
 
 
@@ -10,7 +10,7 @@ def _patch_ipython_loop_if_needed(shell):
     if not isinstance(shell, InteractiveShell):
         return
 
-    import nest_asyncio2
+    import nest_asyncio2  # noqa: PLC0415
 
     nest_asyncio2.apply()
 
