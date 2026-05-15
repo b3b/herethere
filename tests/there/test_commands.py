@@ -11,7 +11,6 @@ from herethere.there.commands.core import (
     NeedDisplay,
     there_code_shortcut,
 )
-from herethere.there.commands.log import log
 
 
 def test_code_executed(call_there_group):
@@ -55,17 +54,6 @@ def test_shell_command_executed(call_there_group):
 def test_exception_on_empty_shell_code(call_there_group):
     with pytest.raises(EmptyCode):
         call_there_group(["shell"], "")
-
-
-def test_file_uploaded(tmpdir, call_there_group):
-    expected_path = Path(tmpdir) / "hello_remote.txt"
-    assert not os.path.exists(expected_path)
-
-    call_there_group(["upload", "tests/hello.txt", "hello_remote.txt"], "")
-
-    assert os.path.exists(expected_path)
-    with open(expected_path) as f:
-        assert f.read() == "hello\n"
 
 
 def test_file_uploaded(tmpdir, call_there_group):
