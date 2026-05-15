@@ -53,7 +53,8 @@ def test_there_command_called(
 def test_error_line_number(capfd, connected_there):
     connected_there.there("", "print 1")
     captured = capfd.readouterr()
-    assert captured.err.strip().startswith('File "<string>", line 2\n')
+    assert 'File "<string>", line 2\n' in captured.err
+    assert "SyntaxError:" in captured.err
 
 
 @pytest.mark.asyncio
