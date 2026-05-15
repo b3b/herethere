@@ -1,7 +1,7 @@
 import asyncio
-import asyncssh
 from os import environ
 
+import asyncssh
 import nest_asyncio
 import pytest
 import pytest_asyncio
@@ -16,10 +16,10 @@ from herethere.there.commands import ContextObject, there_group
 @pytest.fixture
 def connection_config(monkeypatch, unused_tcp_port):
     config = ConnectionConfig(
-        host='localhost',
+        host="localhost",
         port=unused_tcp_port,
-        username='here',
-        password='there',
+        username="here",
+        password="there",
     )
     monkeypatch.setenv("HERE_PORT", str(config.port))
     monkeypatch.setenv("THERE_PORT", str(config.port))
@@ -31,15 +31,15 @@ def server_config(tmpdir, connection_config):
     return ServerConfig(
         **connection_config.asdict,
         chroot=tmpdir,
-        key_path='tests/key.rsa',
+        key_path="tests/key.rsa",
     )
 
 
 @pytest_asyncio.fixture
 async def server_instance(server_config):
-    server = await start_server(server_config, namespace={
-        'test_variable_in_namespace': 'OK'
-    })
+    server = await start_server(
+        server_config, namespace={"test_variable_in_namespace": "OK"}
+    )
     yield server
     await server.stop()
 

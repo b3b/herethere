@@ -1,8 +1,10 @@
 """herethere.there.client"""
+
 from __future__ import annotations
-from contextlib import AbstractAsyncContextManager
+
 import sys
-from typing import List, Optional, TextIO
+from contextlib import AbstractAsyncContextManager
+from typing import TextIO
 
 import asyncssh
 
@@ -10,14 +12,22 @@ from herethere.everywhere.config import ConnectionConfig
 from herethere.everywhere.logging import logger
 
 
+class ConnectionNotConfiguredError(Exception):
+    """Connection configuration is missing."""
+
+
 class PersistentConnection(AbstractAsyncContextManager):
     """SSH connection async context manager with automatic reconnection."""
 
     def __init__(self):
-        self.config: Optional[ConnectionConfig] = None
-        self.connection: Optional[asyncssh.SSHClientConnection] = None
+        self.config: ConnectionConfig | None = None
+        self.connection: asyncssh.SSHClientConnection | None = None
 
     async def __aenter__(self):
+        return await self.ensure_connected()
+
+    async def ensure_connected(self):
+        """Return an active SSH connection, reconnecting if needed."""
         if await self.check_connection():
             return self.connection
         if self.connection:
@@ -40,7 +50,7 @@ class PersistentConnection(AbstractAsyncContextManager):
         """Apply new connection config."""
         self.close()
         self.config = config
-        return await self.__aenter__()
+        return await self.ensure_connected()
 
     async def check_connection(self) -> bool:
         """Check connection is active."""
@@ -56,7 +66,7 @@ class PersistentConnection(AbstractAsyncContextManager):
     async def reconnect(self):
         """Establish connection."""
         if not self.config:
-            raise Exception("Connection is not configured.")
+            raise ConnectionNotConfiguredError("Connection is not configured.")
         self.connection = await asyncssh.connect(**self.config.asdict, known_hosts=None)
         return self.connection
 
@@ -84,8 +94,8 @@ class Client:
     async def runcode(
         self,
         code: str,
-        stdout: Optional[TextIO] = None,
-        stderr: Optional[TextIO] = None,
+        stdout: TextIO | None = None,
+        stderr: TextIO | None = None,
     ) -> str:
         """Execute python code on the remote side."""
         await self._execute_code("code", code, stdout, stderr)
@@ -93,8 +103,8 @@ class Client:
     async def runcode_background(
         self,
         code: str,
-        stdout: Optional[TextIO] = None,
-        stderr: Optional[TextIO] = None,
+        stdout: TextIO | None = None,
+        stderr: TextIO | None = None,
     ) -> str:
         """Execute python code in a separate thread on the remote side."""
         await self._execute_code("background", code, stdout, stderr)
@@ -102,13 +112,13 @@ class Client:
     async def shell(
         self,
         code: str,
-        stdout: Optional[TextIO] = None,
-        stderr: Optional[TextIO] = None,
+        stdout: TextIO | None = None,
+        stderr: TextIO | None = None,
     ) -> str:
         """Execute shell command on the remote side."""
         await self._execute_code("shell", code, stdout, stderr)
 
-    async def upload(self, localpaths: List[str], remotepath) -> str:
+    async def upload(self, localpaths: list[str], remotepath) -> str:
         """Upload files and directories to remote via SFTP."""
         async with self.connection as ssh:
             async with ssh.start_sftp_client() as sftp:
@@ -127,8 +137,8 @@ class Client:
         self,
         command: str,
         code: str,
-        stdout: Optional[TextIO] = None,
-        stderr: Optional[TextIO] = None,
+        stdout: TextIO | None = None,
+        stderr: TextIO | None = None,
     ):
         """Execute command with a code on the remote side."""
 

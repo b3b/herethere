@@ -1,5 +1,5 @@
-from pathlib import Path
 import os
+from pathlib import Path
 
 import asyncssh
 import pytest
@@ -50,13 +50,17 @@ async def test_shell_line_executed(server_instance, connection_config):
 @pytest.mark.asyncio
 async def test_global_variable_available(server_instance, connection_config):
     async with asyncssh.connect(**connection_config.asdict, known_hosts=None) as conn:
-        result = await conn.run("code", check=True, input="print(test_variable_in_namespace)")
+        result = await conn.run(
+            "code", check=True, input="print(test_variable_in_namespace)"
+        )
         assert not result.stderr
-        assert result.stdout == 'OK\n'
+        assert result.stdout == "OK\n"
 
 
 @pytest.mark.asyncio
-async def test_namespace_variable_updated(server_instance, connection_config, tmp_environ):
+async def test_namespace_variable_updated(
+    server_instance, connection_config, tmp_environ
+):
     async with asyncssh.connect(**connection_config.asdict, known_hosts=None) as conn:
         result = await conn.run(
             "code", check=True, input="print(test_global_variable_updated_var)"
@@ -104,11 +108,10 @@ async def test_new_key_generated_if_not_exist(tmpdir, server_config):
 
 
 class CustomSSHServerHere(SSHServerHere):
-
     test_events = []
 
     def connection_made(self, *args, **kwargs):
-        CustomSSHServerHere.test_events.append('connection_made')
+        CustomSSHServerHere.test_events.append("connection_made")
 
 
 @pytest.mark.asyncio
@@ -119,7 +122,7 @@ async def test_custom_server_class_used(server_config, connection_config):
     async with asyncssh.connect(**connection_config.asdict, known_hosts=None):
         pass
 
-    assert CustomSSHServerHere.test_events == ['connection_made']
+    assert CustomSSHServerHere.test_events == ["connection_made"]
 
 
 @pytest.mark.asyncio

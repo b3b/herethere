@@ -1,6 +1,6 @@
+import os
 from contextlib import redirect_stdout
 from io import StringIO
-import os
 from pathlib import Path
 
 import click
@@ -89,7 +89,7 @@ def test_there_code_shortcut(call_there_group):
     def _test_shortcut(code, somearg, some_option):
         assert code is ...
         assert some_option is None
-        assert somearg == 'arg value test'
+        assert somearg == "arg value test"
         return "print('hello from shortcut')"
 
     out = StringIO()

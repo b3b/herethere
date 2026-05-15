@@ -1,5 +1,9 @@
 import sys
-from herethere.everywhere.redirected_output import RedirectedOutputWrapper, redirect_output
+
+from herethere.everywhere.redirected_output import (
+    RedirectedOutputWrapper,
+    redirect_output,
+)
 
 
 def test_redirected_output_installed(mocker):

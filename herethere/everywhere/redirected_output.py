@@ -1,8 +1,10 @@
 """herethere.everywhere.redirected_output"""
-from contextlib import contextmanager
-import threading
-from typing import TextIO, Iterator
+
 import sys
+import threading
+from collections.abc import Iterator
+from contextlib import contextmanager
+from typing import TextIO
 
 
 class RedirectedOutputWrapper:

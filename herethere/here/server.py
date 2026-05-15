@@ -1,11 +1,13 @@
 """herethere.here.server"""
+
 import asyncio
-from concurrent.futures import ThreadPoolExecutor
-from functools import partial
 import os
 import subprocess
 import threading
-from typing import Any, Callable, Optional, Type
+from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
+from functools import partial
+from typing import Any
 
 import asyncssh
 
@@ -13,13 +15,10 @@ from herethere.everywhere.code import runcode
 from herethere.everywhere.logging import logger
 from herethere.here.config import ServerConfig
 
-
 MAX_COMMAND_LENGTH = 65536  # 65537
 
 
-async def handle_ping_command(
-    process: asyncssh.SSHServerProcess, namespace: dict
-):  # pylint: disable=unused-argument
+async def handle_ping_command(process: asyncssh.SSHServerProcess, namespace: dict):  # pylint: disable=unused-argument
     """Handler for SSH command 'ping'."""
     process.stdout.write("pong")
 
@@ -49,14 +48,12 @@ async def handle_background_code_command(
     )
 
 
-async def handle_shell_command(
-    process: asyncssh.SSHServerProcess, namespace: dict
-):  # pylint: disable=unused-argument
+async def handle_shell_command(process: asyncssh.SSHServerProcess, namespace: dict):  # pylint: disable=unused-argument
     """Handler for SSH command 'shell': execute shell command.
     Do not blocks main thread execution.
     """
     command = await process.stdin.read(MAX_COMMAND_LENGTH)
-    proc = subprocess.Popen(
+    proc = subprocess.Popen(  # pylint: disable=consider-using-with
         command,
         shell=True,
         stdout=subprocess.PIPE,
@@ -124,7 +121,7 @@ class SSHServerHere(asyncssh.SSHServer):
             "SSH connection received from %s.", conn.get_extra_info("peername")[0]
         )
 
-    def connection_lost(self, exc: Optional[Exception]):
+    def connection_lost(self, exc: Exception | None):
         """Called when a channel is closed."""
         if exc:
             logger.info("SSH connection lost: %s.", exc)
@@ -181,7 +178,7 @@ def generate_private_key(path: str):
 async def start_server(
     config: ServerConfig,
     namespace: dict = None,
-    server_factory: Type[SSHServerHere] = SSHServerHere,
+    server_factory: type[SSHServerHere] = SSHServerHere,
 ) -> RunningServer:
     """Start SSH server.
 

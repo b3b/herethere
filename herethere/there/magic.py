@@ -1,13 +1,14 @@
 """there.magic"""
+
 import asyncio
 
 from IPython.core import magic_arguments
-from IPython.core.magic_arguments import parse_argstring
 from IPython.core.magic import (
     cell_magic,
     line_magic,
     magics_class,
 )
+from IPython.core.magic_arguments import parse_argstring
 from IPython.display import display
 
 from herethere.everywhere import ConnectionConfig

@@ -1,4 +1,5 @@
 import pytest
+
 from herethere.magic import MagicHere
 
 

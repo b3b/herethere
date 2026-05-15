@@ -1,12 +1,10 @@
-from io import StringIO
 import os
+from io import StringIO
 from pathlib import Path
 
 import pytest
 
-from herethere.everywhere import ConnectionConfig, runcode
-from herethere.everywhere import config
-
+from herethere.everywhere import ConnectionConfig, config, runcode
 
 code_with_definition = """
 def foo(a, b):

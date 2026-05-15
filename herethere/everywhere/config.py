@@ -1,10 +1,11 @@
 """herethere.everywhere.config"""
-from dataclasses import asdict, dataclass, fields
-import os
-from os import environ
-from typing import Any, Dict
 
-from dotenv import find_dotenv, dotenv_values, set_key
+import os
+from dataclasses import asdict, dataclass, fields
+from os import environ
+from typing import Any
+
+from dotenv import dotenv_values, find_dotenv, set_key
 
 
 class ConnectionConfigError(Exception):
@@ -31,7 +32,7 @@ class ConnectionConfig:
         self.port = int(self.port)
 
     @property
-    def asdict(self) -> Dict[str, Any]:
+    def asdict(self) -> dict[str, Any]:
         """Dict represntation of the instance."""
         return asdict(self)
 
@@ -54,7 +55,7 @@ class ConnectionConfig:
         return cls.load_from_dict(env=env, prefix=prefix)
 
     @classmethod
-    def load_from_dict(cls, *, env: Dict[str, str], prefix: str) -> "ConnectionConfig":
+    def load_from_dict(cls, *, env: dict[str, str], prefix: str) -> "ConnectionConfig":
         """Load config from dictionary."""
         try:
             return cls(
@@ -71,7 +72,7 @@ class ConnectionConfig:
     def save(self, path: str, prefix: str = ""):
         """Save config to the given location."""
         if not os.path.exists(path):
-            with open(path, "w"):
+            with open(path, "w", encoding="utf-8"):
                 pass
         for key, value in self.asdict.items():
             result = set_key(path, prefixed_key(prefix=prefix, key=key), str(value))[0]

@@ -3,11 +3,11 @@
 import asyncio
 
 from IPython.core import magic_arguments
-from IPython.core.magic_arguments import parse_argstring
 from IPython.core.magic import (
     line_magic,
     magics_class,
 )
+from IPython.core.magic_arguments import parse_argstring
 
 from herethere.everywhere.magic import MagicEverywhere
 from herethere.here import ServerConfig, start_server

@@ -62,8 +62,7 @@ def test_error_line_number(capfd, connected_there):
 @pytest.mark.asyncio
 async def test_limited_output_created(mocker, connected_there):
     command = mocker.patch(
-        "herethere.there.magic.there_group",
-        side_effect=NeedDisplay(maxlen=1)
+        "herethere.there.magic.there_group", side_effect=NeedDisplay(maxlen=1)
     )
 
     with pytest.raises(NeedDisplay):

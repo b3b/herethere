@@ -1,10 +1,11 @@
 """herethere.there.output"""
+
 from collections import deque
 
 from ipywidgets import Output
 
 
-class LimitedOutput(Output):
+class LimitedOutput(Output):  # pylint: disable=abstract-method
     """Widget to capture and display stdout and stderr.
     Output is limited by a `maxlen` number of lines."""
 

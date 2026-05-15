@@ -1,8 +1,8 @@
 """herethere.here.__main__"""
 
+import asyncio
 import logging
 
-import asyncio
 import asyncssh
 
 from .config import ServerConfig
@@ -12,7 +12,9 @@ from .server import start_server
 def main():
     """Run server here."""
 
-    for logger in [logging.getLogger(name) for name in logging.root.manager.loggerDict]:
+    for logger in [
+        logging.getLogger(name) for name in logging.Logger.manager.loggerDict
+    ]:
         logger.setLevel(logging.DEBUG)
 
     logging.basicConfig(level=logging.DEBUG)

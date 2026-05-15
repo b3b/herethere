@@ -1,9 +1,11 @@
 """herethere.there.commands.core"""
+
 import asyncio
+import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from functools import wraps
-import time
-from typing import Callable, TextIO
+from typing import TextIO
 
 import click
 
@@ -122,7 +124,7 @@ def upload(ctx, localpaths, remotepath):
 
 
 def there_code_shortcut(
-    handler: Callable[[str], str]
+    handler: Callable[[str], str],
 ) -> Callable[[click.Context], None]:
     """Decorator to register %there subcommand to execute Python code.
 

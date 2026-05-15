@@ -1,10 +1,10 @@
-from io import StringIO
 from contextlib import redirect_stdout
+from io import StringIO
 from pathlib import Path
 
 import pytest
 
-from herethere.there.client import Client
+from herethere.there.client import Client, ConnectionNotConfiguredError
 
 
 @pytest.mark.asyncio
@@ -67,5 +67,7 @@ async def test_connection_disconnected(there):
 @pytest.mark.asyncio
 async def test_exception_on_unconfigured_connection_copy():
     client = Client()
-    with pytest.raises(Exception, match="Connection is not configured."):
+    with pytest.raises(
+        ConnectionNotConfiguredError, match="Connection is not configured."
+    ):
         await client.copy()

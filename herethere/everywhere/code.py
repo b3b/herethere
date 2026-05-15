@@ -1,17 +1,18 @@
 """herethere.everywhere.code"""
+
 from code import InteractiveInterpreter
 from io import StringIO
-from typing import Dict, Optional, TextIO
+from typing import TextIO
 
 from herethere.everywhere.redirected_output import redirect_output
 
 
 def runcode(
     code: str,
-    stdout: Optional[TextIO] = None,
-    stderr: Optional[TextIO] = None,
-    namespace: Optional[Dict] = None,
-) -> Optional[str]:
+    stdout: TextIO | None = None,
+    stderr: TextIO | None = None,
+    namespace: dict | None = None,
+) -> str | None:
     """Execute a code."""
     should_return_value = stdout is None
 

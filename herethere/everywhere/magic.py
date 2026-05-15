@@ -1,8 +1,8 @@
 """herethere.everywhere.magic"""
 
+import nest_asyncio
 from IPython.core.magic import Magics
 from traitlets.config.configurable import Configurable
-import nest_asyncio
 
 
 class MagicEverywhere(Magics, Configurable):
