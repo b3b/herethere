@@ -27,7 +27,9 @@ async def serve():
     try:
         await asyncio.Event().wait()
     finally:
+        logging.getLogger(__name__).info("Stopping SSH server.")
         await server.stop()
+        logging.getLogger(__name__).info("SSH server stopped.")
 
 
 def main():

@@ -1,10 +1,12 @@
+import asyncio
+import contextlib
 import os
 from pathlib import Path
 
 import asyncssh
 import pytest
 
-from herethere.here.server import SSHServerHere, start_server
+from herethere.here.server import RunningServer, SSHServerHere, start_server
 
 
 @pytest.mark.asyncio
@@ -17,6 +19,136 @@ async def test_server_is_serving(server_instance):
 async def test_client_connected(server_instance, connection_config):
     async with asyncssh.connect(**connection_config.asdict, known_hosts=None):
         pass
+
+
+@pytest.mark.asyncio
+async def test_server_stop_disconnects_sleeping_client(
+    server_config,
+    connection_config,
+):
+    """
+    A connected SSH client must not be able to keep the debug server alive forever.
+    """
+    server_instance = await start_server(server_config)
+    client_connected = asyncio.Event()
+
+    async def keep_client_connected():
+        """Open an SSH connection and wait until the server closes it."""
+        async with asyncssh.connect(
+            **connection_config.asdict,
+            known_hosts=None,
+        ) as conn:
+            client_connected.set()
+            await conn.wait_closed()
+
+    client_task = asyncio.create_task(
+        keep_client_connected(),
+        name="sleeping debug client",
+    )
+    try:
+        await asyncio.wait_for(client_connected.wait(), timeout=1)
+
+        await asyncio.wait_for(server_instance.stop(), timeout=1)
+
+        assert not server_instance.is_serving()
+
+        # The server should have disconnected the active client.
+        await asyncio.wait_for(client_task, timeout=1)
+    finally:
+        if not client_task.done():
+            client_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await client_task
+
+        with contextlib.suppress(Exception):
+            await asyncio.wait_for(server_instance.stop(), timeout=1)
+
+
+class FakeAsyncioServer:
+    """Minimal fake for the AsyncSSH server/acceptor."""
+
+    def __init__(self):
+        self.closed = False
+        self.wait_closed_called = False
+
+    def close(self):
+        self.closed = True
+
+    async def wait_closed(self):
+        self.wait_closed_called = True
+
+    def is_serving(self):
+        return not self.closed
+
+
+class StuckConnection:
+    """Connection where graceful close never completes."""
+
+    def __init__(self):
+        self.close_called = False
+        self.abort_called = False
+
+    def close(self):
+        self.close_called = True
+
+    def abort(self):
+        self.abort_called = True
+
+    async def wait_closed(self):
+        await asyncio.Future()  # never completes
+
+
+class FakeExecutor:
+    def __init__(self):
+        self.shutdown_called = False
+        self.shutdown_wait = None
+
+    def shutdown(self, wait=True):
+        self.shutdown_called = True
+        self.shutdown_wait = wait
+
+
+@pytest.mark.asyncio
+async def test_stop_aborts_stuck_connection_and_returns():
+    """
+    RunningServer.stop() must not hang forever if a client connection
+    does not finish graceful close.
+
+    This simulates an AsyncSSH connection where:
+
+        conn.close()
+        await conn.wait_closed()
+
+    never completes.
+
+    Expected behavior:
+    - server listener is closed
+    - graceful conn.close() is attempted
+    - stuck connection is aborted
+    - executor is shut down
+    - stop() returns promptly
+    """
+    fake_server = FakeAsyncioServer()
+    fake_executor = FakeExecutor()
+    stuck_conn = StuckConnection()
+    namespace = {}
+
+    server = RunningServer(
+        server=fake_server,
+        namespace=namespace,
+        executor=fake_executor,
+        connections={stuck_conn},
+    )
+
+    await asyncio.wait_for(server.stop(timeout=0.01), timeout=1)
+
+    assert namespace["ssh_server_closed"].is_set()
+    assert fake_server.closed
+    assert fake_server.wait_closed_called
+    assert stuck_conn.close_called
+    assert stuck_conn.abort_called
+    assert fake_executor.shutdown_called
+    assert fake_executor.shutdown_wait is False
 
 
 @pytest.mark.asyncio

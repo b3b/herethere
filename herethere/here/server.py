@@ -16,6 +16,7 @@ from herethere.everywhere.logging import logger
 from herethere.here.config import ServerConfig
 
 MAX_COMMAND_LENGTH = 65536  # 65537
+CONNECTION_CLOSE_TIMEOUT = 1.0
 
 
 async def handle_ping_command(process: asyncssh.SSHServerProcess, namespace: dict):  # pylint: disable=unused-argument
@@ -111,18 +112,33 @@ class SFTPServerHere(asyncssh.SFTPServer):
 class SSHServerHere(asyncssh.SSHServer):
     """SSH server protocol handler with `username` and `password` options."""
 
-    def __init__(self, username: str, password: str, executor: ThreadPoolExecutor):
+    def __init__(
+        self,
+        username: str,
+        password: str,
+        executor: ThreadPoolExecutor,
+        connections: set[asyncssh.SSHServerConnection] | None = None,
+    ):
         self.passwords = {username: password}
         self.executor = executor
+        self.connections = connections
+        self.conn: asyncssh.SSHServerConnection | None = None
 
     def connection_made(self, conn: asyncssh.SSHServerConnection):
-        """Called when a channel is opened successfully."""
-        logger.info(
-            "SSH connection received from %s.", conn.get_extra_info("peername")[0]
-        )
+        """Called when a connection is opened successfully."""
+        self.conn = conn
+        if self.connections is not None:
+            self.connections.add(conn)
+
+        peername = conn.get_extra_info("peername")
+        peer = peername[0] if peername else "unknown"
+        logger.info("SSH connection received from %s.", peer)
 
     def connection_lost(self, exc: Exception | None):
-        """Called when a channel is closed."""
+        """Called when a connection is closed."""
+        if self.connections is not None and self.conn is not None:
+            self.connections.discard(self.conn)
+            self.conn = None
         if exc:
             logger.info("SSH connection lost: %s.", exc)
         else:
@@ -143,7 +159,7 @@ class SSHServerHere(asyncssh.SSHServer):
 
     async def run_in_executor(self, func: Callable[..., Any], **kwargs: Any):
         """Run func in the thead."""
-        await asyncio.get_event_loop().run_in_executor(
+        await asyncio.get_running_loop().run_in_executor(
             self.executor, partial(func, **kwargs)
         )
 
@@ -152,22 +168,97 @@ class RunningServer:
     """Wrapper for a running SSH server instance."""
 
     def __init__(
-        self, server: asyncio.AbstractServer, namespace, executor: ThreadPoolExecutor
+        self,
+        server: asyncio.AbstractServer,
+        namespace,
+        executor: ThreadPoolExecutor,
+        connections: set[asyncssh.SSHServerConnection],
     ):
         self.server = server
         self.executor = executor
+        self.connections = connections
         self.namespace = namespace
         self.namespace["ssh_server_closed"] = threading.Event()
 
     def __getattr__(self, attr):
         return getattr(self.server, attr)
 
-    async def stop(self):
+    @staticmethod
+    def _log_wait_closed_results(tasks, action: str):
+        for task in tasks:
+            try:
+                task.result()
+            except asyncio.CancelledError:
+                logger.debug("SSH connection %s wait was cancelled.", action)
+            except Exception as exc:  # pylint: disable=broad-exception-caught  # noqa: BLE001
+                logger.debug("SSH connection %s finished with error: %r", action, exc)
+
+    async def _wait_for_connection_tasks(self, tasks, action: str, timeout: float):
+        if not tasks:
+            return set()
+
+        done, pending = await asyncio.wait(
+            tasks,
+            timeout=timeout,
+        )
+        self._log_wait_closed_results(done, action)
+        return pending
+
+    async def _close_connections(self, timeout: float):
+        connections = tuple(self.connections)
+        for conn in connections:
+            conn.close()
+
+        wait_closed_tasks = [
+            asyncio.create_task(
+                conn.wait_closed(),
+                name="SSH connection wait_closed",
+            )
+            for conn in connections
+        ]
+        if wait_closed_tasks:
+            pending = await self._wait_for_connection_tasks(
+                wait_closed_tasks,
+                "close",
+                timeout,
+            )
+
+            for task, conn in zip(wait_closed_tasks, connections, strict=True):
+                if task in pending:
+                    logger.debug("SSH connection did not close in time; aborting.")
+                    conn.abort()
+
+            if pending:
+                still_pending = await self._wait_for_connection_tasks(
+                    pending,
+                    "abort",
+                    timeout,
+                )
+
+                for task in still_pending:
+                    logger.debug(
+                        "SSH connection wait_closed still pending; cancelling task."
+                    )
+                    task.cancel()
+
+                if still_pending:
+                    await asyncio.gather(*still_pending, return_exceptions=True)
+
+    async def stop(self, timeout: float = CONNECTION_CLOSE_TIMEOUT):
         """Stop SSH server."""
         self.namespace["ssh_server_closed"].set()
         self.server.close()
+        await self._close_connections(timeout)
+
         self.executor.shutdown(wait=False)
-        await self.server.wait_closed()
+
+        try:
+            await asyncio.wait_for(
+                self.server.wait_closed(),
+                timeout=timeout,
+            )
+        except asyncio.TimeoutError:
+            logger.debug("SSH server wait_closed timed out.")
 
 
 def generate_private_key(path: str):
@@ -200,6 +291,7 @@ async def start_server(
     executor = ThreadPoolExecutor(
         max_workers=64, thread_name_prefix="SSHServerHereThread"
     )
+    connections: set[asyncssh.SSHServerConnection] = set()
 
     logger.debug(
         "start_server host=%s port=%s chroot=%s",
@@ -216,8 +308,14 @@ async def start_server(
             username=config.username,
             password=config.password,
             executor=executor,
+            connections=connections,
         ),
         process_factory=partial(handle_client, namespace=namespace),
         sftp_factory=config.chroot and partial(SFTPServerHere, chroot=config.chroot),
     )
-    return RunningServer(server=server, namespace=namespace, executor=executor)
+    return RunningServer(
+        server=server,
+        namespace=namespace,
+        executor=executor,
+        connections=connections,
+    )
