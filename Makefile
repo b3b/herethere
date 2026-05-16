@@ -1,3 +1,7 @@
+PYTHON_VERSION ?= 3.10
+UV_PYTHON := $(PYTHON_VERSION)
+export UV_PYTHON
+
 .PHONY: sync test lint format check build clean
 
 sync:
@@ -22,7 +26,7 @@ build: sync
 	uv run twine check dist/*
 
 venv:
-	uv venv --python 3.10 --managed-python --seed --clear
+	uv venv --python $(PYTHON_VERSION) --managed-python --seed --clear
 	uv lock
 
 clean:

@@ -9,8 +9,8 @@ from .config import ServerConfig
 from .server import start_server
 
 
-def main():
-    """Run server here."""
+def configure_logging():
+    """Configure debug logging for the command-line server."""
 
     for logger in [
         logging.getLogger(name) for name in logging.Logger.manager.loggerDict
@@ -20,11 +20,24 @@ def main():
     logging.basicConfig(level=logging.DEBUG)
     asyncssh.set_log_level("DEBUG")
 
-    loop = asyncio.get_event_loop()
-    loop.run_until_complete(
-        start_server(ServerConfig.load(prefix="here"), namespace={})
-    )
-    loop.run_forever()
+
+async def serve():
+    """Run server until interrupted."""
+    server = await start_server(ServerConfig.load(prefix="here"), namespace={})
+    try:
+        await asyncio.Event().wait()
+    finally:
+        await server.stop()
+
+
+def main():
+    """Run server here."""
+    configure_logging()
+
+    try:
+        asyncio.run(serve())
+    except KeyboardInterrupt:
+        pass
 
 
 if __name__ == "__main__":

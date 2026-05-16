@@ -7,7 +7,7 @@ name = "herethere"
 dynamic = ["version"]
 description = "herethere"
 readme = { file = "README.rst", content-type = "text/x-rst" }
-requires-python = ">=3.10,<3.14"
+requires-python = ">=3.10"
 authors = [
     { name = "b3b", email = "ash.b3b@gmail.com" },
 ]
@@ -31,6 +31,7 @@ classifiers = [
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",    
 ]
 dependencies = [
     "asyncssh>=2.17,<3",
