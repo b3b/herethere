@@ -81,6 +81,12 @@ class FakeAsyncioServer:
         return not self.closed
 
 
+class StuckAsyncioServer(FakeAsyncioServer):
+    async def wait_closed(self):
+        self.wait_closed_called = True
+        await asyncio.Future()
+
+
 class StuckConnection:
     """Connection where graceful close never completes."""
 
@@ -98,6 +104,26 @@ class StuckConnection:
         await asyncio.Future()  # never completes
 
 
+class AbortCompletesConnection:
+    """Connection where abort allows wait_closed() to finish."""
+
+    def __init__(self):
+        self.close_called = False
+        self.abort_called = False
+        self._closed = None
+
+    def close(self):
+        self.close_called = True
+
+    def abort(self):
+        self.abort_called = True
+        self._closed.set_result(None)
+
+    async def wait_closed(self):
+        self._closed = asyncio.Future()
+        await self._closed
+
+
 class FakeExecutor:
     def __init__(self):
         self.shutdown_called = False
@@ -106,6 +132,53 @@ class FakeExecutor:
     def shutdown(self, wait=True):
         self.shutdown_called = True
         self.shutdown_wait = wait
+
+
+def test_connection_made_tracks_connection_and_unknown_peer(mocker):
+    connections = set()
+    conn = mocker.Mock()
+    conn.get_extra_info.return_value = None
+    logger = mocker.patch("herethere.here.server.logger")
+    server = SSHServerHere(
+        "user",
+        "password",
+        executor=mocker.Mock(),
+        connections=connections,
+    )
+
+    server.connection_made(conn)
+
+    assert server.conn is conn
+    assert connections == {conn}
+    logger.info.assert_called_once_with("SSH connection received from %s.", "unknown")
+
+
+def test_connection_made_accepts_missing_connection_tracker(mocker):
+    conn = mocker.Mock()
+    conn.get_extra_info.return_value = ("127.0.0.1", 12345)
+    logger = mocker.patch("herethere.here.server.logger")
+    server = SSHServerHere("user", "password", executor=mocker.Mock())
+
+    server.connection_made(conn)
+
+    assert server.conn is conn
+    logger.info.assert_called_once_with("SSH connection received from %s.", "127.0.0.1")
+
+
+def test_connection_lost_removes_tracked_connection(mocker):
+    conn = mocker.Mock()
+    server = SSHServerHere(
+        "user",
+        "password",
+        executor=mocker.Mock(),
+        connections={conn},
+    )
+    server.conn = conn
+
+    server.connection_lost(None)
+
+    assert server.conn is None
+    assert server.connections == set()
 
 
 @pytest.mark.asyncio
@@ -149,6 +222,84 @@ async def test_stop_aborts_stuck_connection_and_returns():
     assert stuck_conn.abort_called
     assert fake_executor.shutdown_called
     assert fake_executor.shutdown_wait is False
+
+
+@pytest.mark.asyncio
+async def test_stop_handles_connection_closed_after_abort():
+    fake_server = FakeAsyncioServer()
+    fake_executor = FakeExecutor()
+    conn = AbortCompletesConnection()
+    server = RunningServer(
+        server=fake_server,
+        namespace={},
+        executor=fake_executor,
+        connections={conn},
+    )
+
+    await asyncio.wait_for(server.stop(timeout=0.01), timeout=1)
+
+    assert conn.close_called
+    assert conn.abort_called
+    assert fake_executor.shutdown_called
+
+
+@pytest.mark.asyncio
+async def test_stop_logs_server_wait_closed_timeout(mocker):
+    fake_server = StuckAsyncioServer()
+    fake_executor = FakeExecutor()
+    logger = mocker.patch("herethere.here.server.logger")
+    server = RunningServer(
+        server=fake_server,
+        namespace={},
+        executor=fake_executor,
+        connections=set(),
+    )
+
+    await asyncio.wait_for(server.stop(timeout=0.01), timeout=1)
+
+    assert fake_server.wait_closed_called
+    logger.debug.assert_called_with("SSH server wait_closed timed out.")
+
+
+@pytest.mark.asyncio
+async def test_wait_for_connection_tasks_accepts_empty_task_set():
+    server = RunningServer(
+        server=FakeAsyncioServer(),
+        namespace={},
+        executor=FakeExecutor(),
+        connections=set(),
+    )
+
+    pending = await server._wait_for_connection_tasks(set(), "close", timeout=0.01)
+
+    assert pending == set()
+
+
+@pytest.mark.asyncio
+async def test_log_wait_closed_results_handles_cancelled_and_failed_tasks(mocker):
+    logger = mocker.patch("herethere.here.server.logger")
+
+    async def cancelled():
+        raise asyncio.CancelledError
+
+    async def failed():
+        raise RuntimeError("boom")
+
+    cancelled_task = asyncio.create_task(cancelled())
+    failed_task = asyncio.create_task(failed())
+    await asyncio.wait({cancelled_task, failed_task})
+
+    RunningServer._log_wait_closed_results(
+        {cancelled_task, failed_task},
+        action="close",
+    )
+
+    logger.debug.assert_any_call("SSH connection %s wait was cancelled.", "close")
+    logger.debug.assert_any_call(
+        "SSH connection %s finished with error: %r",
+        "close",
+        failed_task.exception(),
+    )
 
 
 @pytest.mark.asyncio
