@@ -155,7 +155,7 @@ class SSHServerHere(asyncssh.SSHServer):
     def validate_password(self, username: str, password: str) -> bool:
         """Return whether password is valid for this user."""
         expected = self.passwords.get(username, None)
-        return expected and (password == expected)
+        return expected is not None and password == expected
 
     async def run_in_executor(self, func: Callable[..., Any], **kwargs: Any):
         """Run func in the thead."""

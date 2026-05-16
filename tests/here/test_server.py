@@ -181,6 +181,27 @@ def test_connection_lost_removes_tracked_connection(mocker):
     assert server.connections == set()
 
 
+@pytest.mark.parametrize(
+    ("configured_password", "username", "password", "expected"),
+    [
+        ("password", "user", "password", True),
+        ("password", "user", "wrong", False),
+        ("password", "unknown", "password", False),
+        ("", "user", "password", False),
+    ],
+)
+def test_validate_password_returns_strict_booleans(
+    mocker,
+    configured_password,
+    username,
+    password,
+    expected,
+):
+    server = SSHServerHere("user", configured_password, executor=mocker.Mock())
+
+    assert server.validate_password(username, password) is expected
+
+
 @pytest.mark.asyncio
 async def test_stop_aborts_stuck_connection_and_returns():
     """
