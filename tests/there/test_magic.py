@@ -27,6 +27,29 @@ async def test_connected(server_instance, connection_config, tmp_environ):
     await magic.client.disconnect()
 
 
+def test_connect_magic_connects_client(mocker, tmp_environ):
+    tmp_environ.update(
+        {
+            "THERE_HOST": "localhost",
+            "THERE_PORT": "9022",
+            "THERE_USERNAME": "here",
+            "THERE_PASSWORD": "there",
+        }
+    )
+    magic = MagicThere(shell=None)
+    connect = mocker.patch.object(
+        magic.client,
+        "connect",
+        new=mocker.Mock(return_value="connect-result"),
+    )
+    run = mocker.patch("herethere.there.magic.asyncio.run")
+
+    magic.connect("")
+
+    run.assert_called_once_with("connect-result")
+    connect.assert_called_once()
+
+
 def test_code_executed(call_there_group):
     out = StringIO()
     with redirect_stdout(out):

@@ -5,6 +5,8 @@ import types
 
 from IPython.core.interactiveshell import InteractiveShell
 
+from herethere import magic
+
 
 def _fail_on_patcher_import(monkeypatch):
     original_import = builtins.__import__
@@ -50,3 +52,16 @@ def test_real_ipython_shell_construction_applies_patcher(monkeypatch, mocker, tm
     MagicHere(shell=InteractiveShell())
 
     patcher.apply.assert_called_once_with()
+
+
+def test_load_ipython_extension_registers_magics(mocker):
+    ipython = types.SimpleNamespace(register_magics=mocker.Mock())
+
+    magic.load_ipython_extension(ipython)
+
+    first_magic = ipython.register_magics.call_args_list[0].args[0]
+    second_magic = ipython.register_magics.call_args_list[1].args[0]
+
+    assert ipython.register_magics.call_count == 2
+    assert isinstance(first_magic, magic.MagicHere)
+    assert isinstance(second_magic, magic.MagicThere)

@@ -3,9 +3,14 @@ from contextlib import redirect_stdout
 from io import StringIO
 from pathlib import Path
 
+import asyncssh
 import pytest
 
-from herethere.there.client import Client, ConnectionNotConfiguredError
+from herethere.there.client import (
+    Client,
+    ConnectionNotConfiguredError,
+    PersistentConnection,
+)
 from herethere.there.commands.log import LOG_COMMAND_TEMPLATE
 
 
@@ -161,3 +166,111 @@ async def test_exception_on_unconfigured_connection_copy():
         ConnectionNotConfiguredError, match="Connection is not configured."
     ):
         await client.copy()
+
+
+@pytest.mark.asyncio
+async def test_persistent_connection_context_exit_noop():
+    connection = PersistentConnection()
+
+    assert await connection.__aexit__(None, None, None) is None
+
+
+def test_persistent_connection_close_ignores_asyncssh_error(mocker):
+    connection = PersistentConnection()
+    ssh = mocker.Mock()
+    ssh.close.side_effect = asyncssh.Error(1, "close failed")
+    connection.connection = ssh
+
+    connection.close()
+
+    assert connection.connection is None
+
+
+@pytest.mark.asyncio
+async def test_persistent_connection_reconnects_after_failed_ping(mocker):
+    connection = PersistentConnection()
+    stale = mocker.Mock()
+    stale.run = mocker.AsyncMock(side_effect=asyncssh.Error(1, "ping failed"))
+    connection.connection = stale
+    reconnect = mocker.patch.object(
+        connection,
+        "reconnect",
+        new=mocker.AsyncMock(return_value="fresh"),
+    )
+
+    assert await connection.ensure_connected() == "fresh"
+
+    reconnect.assert_awaited_once_with()
+    assert connection.connection is None
+
+
+def test_sftp_progress_handler_logs(mocker):
+    client = Client()
+    logger = mocker.patch("herethere.there.client.logger")
+
+    client.sftp_progress_handler("src", "dst", 1, 2)
+
+    logger.debug.assert_called_once()
+
+
+class ReaderOnce:
+    def __init__(self, *chunks):
+        self.chunks = list(chunks)
+
+    async def readline(self):
+        return self.chunks.pop(0) if self.chunks else ""
+
+
+class WriterWithoutFlush:
+    def __init__(self):
+        self.written = ""
+
+    def write(self, data):
+        self.written += data
+
+
+class FakeProcessContext:
+    def __init__(self, process):
+        self.process = process
+
+    async def __aenter__(self):
+        return self.process
+
+    async def __aexit__(self, *exc_info):
+        pass
+
+
+class FakeConnectionContext:
+    def __init__(self, process):
+        self.process = process
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc_info):
+        pass
+
+    def create_process(self, command):
+        self.process.command = command
+        return FakeProcessContext(self.process)
+
+
+@pytest.mark.asyncio
+async def test_execute_code_accepts_writer_without_flush(mocker):
+    process = mocker.Mock()
+    process.stdin = mocker.Mock()
+    process.stdout = ReaderOnce("out")
+    process.stderr = ReaderOnce("")
+    process.wait = mocker.AsyncMock()
+    stdout = WriterWithoutFlush()
+
+    client = Client()
+    client.connection = FakeConnectionContext(process)
+
+    await client._execute_code("code", "print('hello')", stdout=stdout)
+
+    assert process.command == "code"
+    process.stdin.write.assert_called_once_with("print('hello')")
+    process.stdin.write_eof.assert_called_once_with()
+    assert stdout.written == "out"
+    process.wait.assert_awaited_once_with()

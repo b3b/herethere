@@ -42,6 +42,12 @@ def test_runcode_expected_io(code, expected):
     assert stdout.getvalue() == expected
 
 
+def test_runcode_returns_combined_stderr_and_stdout():
+    stderr = StringIO()
+
+    assert runcode("print('out')", stderr=stderr) == "\nout\n"
+
+
 def test_runcode_namespace_used():
     assert "NameError:" in runcode("print(runcode_global_var)")
 
@@ -101,3 +107,15 @@ def test_connection_config_saved(tmpdir, prefix):
     ConnectionConfig("localhost", "9022", "here", "there").save(path, prefix=prefix)
 
     ConnectionConfig.load(path=path, prefix=prefix)
+
+
+def test_connection_config_save_error(mocker, tmp_path):
+    path = tmp_path / "existing.env"
+    path.write_text("", encoding="utf-8")
+    mocker.patch(
+        "herethere.everywhere.config.set_key",
+        return_value=(False, None, None),
+    )
+
+    with pytest.raises(config.ConnectionConfigError, match="Error while saving"):
+        ConnectionConfig("localhost", "9022", "here", "there").save(path)

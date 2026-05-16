@@ -1,3 +1,4 @@
+import asyncio
 import os
 from contextlib import redirect_stdout
 from io import StringIO
@@ -8,10 +9,40 @@ import pytest
 
 import herethere.there.commands.log  # noqa: F401
 from herethere.there.commands.core import (
+    ContextObject,
     EmptyCode,
     NeedDisplay,
     there_code_shortcut,
+    there_group,
 )
+
+
+class ForegroundClientStub:
+    """Foreground client stub which records work done by a separate instance."""
+
+    def __init__(self):
+        self.calls = []
+        self.copied = None
+
+    async def copy(self):
+        self.copied = SeparateClientInstanceStub(self.calls)
+        return self.copied
+
+
+class SeparateClientInstanceStub:
+    """Separate client instance used by background commands."""
+
+    def __init__(self, calls):
+        self.calls = calls
+
+    async def runcode_background(self, code, stdout=None, stderr=None):
+        self.calls.append(("runcode_background", code, stdout, stderr))
+
+    async def shell(self, code, stdout=None, stderr=None):
+        self.calls.append(("shell", code, stdout, stderr))
+
+    async def disconnect(self):
+        self.calls.append(("disconnect",))
 
 
 def test_code_executed(call_there_group):
@@ -36,6 +67,70 @@ def test_background_display_max_lines_applied(call_there_group):
     with pytest.raises(NeedDisplay) as exc:
         call_there_group(["-bl", "100"], "print('hello')")
     assert exc.value.maxlen == 100
+
+
+@pytest.mark.asyncio
+async def test_background_python_code_uses_separate_client_instance():
+    """Background Python execution must run through a separate client instance."""
+    client = ForegroundClientStub()
+    stdout = StringIO()
+    stderr = StringIO()
+    ctx = ContextObject(
+        client=client,
+        code="print('hello')",
+        stdout=stdout,
+        stderr=stderr,
+    )
+    ctx.background = True
+
+    ctx.runcode()
+    await asyncio.sleep(0)
+
+    assert client.calls == [
+        ("runcode_background", "# %%there ... \nprint('hello')", stdout, stderr),
+        ("disconnect",),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_background_shell_uses_separate_client_instance():
+    """Background shell execution must run through a separate client instance."""
+    client = ForegroundClientStub()
+    stdout = StringIO()
+    stderr = StringIO()
+    ctx = ContextObject(client=client, code="echo hello", stdout=stdout, stderr=stderr)
+    ctx.background = True
+
+    ctx.shell()
+    await asyncio.sleep(0)
+
+    assert client.calls == [
+        ("shell", "echo hello", stdout, stderr),
+        ("disconnect",),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_background_command_with_display_sets_context_background():
+    """The command group enables background mode once display streams exist."""
+    stdout = StringIO()
+    stderr = StringIO()
+    ctx = ContextObject(
+        client=ForegroundClientStub(),
+        code="print('hello')",
+        stdout=stdout,
+        stderr=stderr,
+    )
+
+    there_group(
+        ["--background"],
+        "test",
+        standalone_mode=False,
+        obj=ctx,
+    )
+    await asyncio.sleep(0)
+
+    assert ctx.background is True
 
 
 def test_execution_delayed(capfd, mocker, call_there_group):

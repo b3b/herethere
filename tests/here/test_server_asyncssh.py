@@ -1,7 +1,7 @@
 import asyncssh
 import pytest
 
-from herethere.here.server import MAX_COMMAND_LENGTH, handle_client
+from herethere.here.server import MAX_COMMAND_LENGTH, SSHServerHere, handle_client
 
 
 class TestServer(asyncssh.SSHServer):
@@ -55,8 +55,9 @@ class RecordingOutput:
 
 
 class RecordingProcess:
-    def __init__(self, command):
+    def __init__(self, command, terminal_type="xterm"):
         self.command = command
+        self.terminal_type = terminal_type
         self.events = []
         self.channel = RecordingChannel(self.events)
         self.stdin = RecordingInput(
@@ -71,7 +72,7 @@ class RecordingProcess:
         self.exit_status = status
 
     def get_terminal_type(self):
-        return "xterm"
+        return self.terminal_type
 
 
 @pytest.mark.asyncio
@@ -90,6 +91,36 @@ async def test_handle_client_configures_terminal_mode_before_reading_pty_input()
     assert process.stdout.written == "pong\n"
     assert process.stderr.written == ""
     assert process.exit_status == 0
+
+
+@pytest.mark.asyncio
+async def test_handle_client_accepts_missing_namespace_and_non_pty_input():
+    process = RecordingProcess(command="code", terminal_type=None)
+
+    await handle_client(process, namespace=None)
+
+    assert process.events == [("read", MAX_COMMAND_LENGTH)]
+    assert process.stdout.written == "pong\n"
+    assert process.exit_status == 0
+
+
+@pytest.mark.asyncio
+async def test_handle_client_unknown_command_exits_cleanly():
+    process = RecordingProcess(command="unknown-command")
+
+    await handle_client(process, namespace={})
+
+    assert process.stderr.written == "Unknown command"
+    assert process.exit_status == 0
+
+
+def test_connection_lost_with_exception_logged(mocker):
+    server = SSHServerHere("user", "password", executor=mocker.Mock())
+    logger = mocker.patch("herethere.here.server.logger")
+
+    server.connection_lost(RuntimeError("boom"))
+
+    logger.info.assert_called_once()
 
 
 @pytest.mark.asyncio

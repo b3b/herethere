@@ -56,3 +56,25 @@ def test_use_non_redirected_output(mocker, capfd):
     captured = capfd.readouterr()
     assert captured.out == "test out"
     assert captured.err == "test err"
+
+
+def test_flush_ignored_when_target_has_no_flush():
+    wrapper = RedirectedOutputWrapper(sys.stdout)
+
+    class StreamWithoutFlush:
+        pass
+
+    wrapper.register(StreamWithoutFlush())
+    wrapper.flush()
+    wrapper.unregister()
+
+
+def test_flush_delegated_to_target(mocker):
+    wrapper = RedirectedOutputWrapper(sys.stdout)
+    target = mocker.Mock()
+
+    wrapper.register(target)
+    wrapper.flush()
+    wrapper.unregister()
+
+    target.flush.assert_called_once_with()
