@@ -64,6 +64,33 @@ async def test_server_stop_disconnects_sleeping_client(
             await asyncio.wait_for(server_instance.stop(), timeout=1)
 
 
+@pytest.mark.asyncio
+async def test_server_port_can_be_reused_after_stop_with_connected_client(
+    server_config,
+    connection_config,
+):
+    server_instance = await start_server(server_config)
+    restarted = None
+    conn = None
+
+    try:
+        conn = await asyncssh.connect(**connection_config.asdict, known_hosts=None)
+
+        await server_instance.stop()
+
+        restarted = await start_server(server_config)
+        assert restarted.is_serving()
+    finally:
+        if restarted is not None:
+            await restarted.stop()
+        if conn is not None:
+            conn.close()
+            with contextlib.suppress(asyncssh.Error, OSError, asyncio.TimeoutError):
+                await asyncio.wait_for(conn.wait_closed(), timeout=1)
+        with contextlib.suppress(Exception):
+            await asyncio.wait_for(server_instance.stop(), timeout=1)
+
+
 class FakeAsyncioServer:
     """Minimal fake for the AsyncSSH server/acceptor."""
 

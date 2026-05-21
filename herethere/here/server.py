@@ -312,6 +312,7 @@ async def start_server(
         ),
         process_factory=partial(handle_client, namespace=namespace),
         sftp_factory=config.chroot and partial(SFTPServerHere, chroot=config.chroot),
+        reuse_address=True,
     )
     return RunningServer(
         server=server,
