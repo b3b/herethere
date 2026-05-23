@@ -1,4 +1,7 @@
+import errno
+import logging
 import os
+import threading
 from contextlib import redirect_stdout
 from io import StringIO
 from pathlib import Path
@@ -7,6 +10,7 @@ import click
 import pytest
 
 import herethere.there.commands.log  # noqa: F401
+from herethere.everywhere import runcode
 from herethere.there.commands.core import (
     ContextObject,
     EmptyCode,
@@ -14,6 +18,7 @@ from herethere.there.commands.core import (
     there_code_shortcut,
     there_group,
 )
+from herethere.there.commands.log import LOG_COMMAND_TEMPLATE
 
 
 class ForegroundClientStub:
@@ -60,11 +65,89 @@ class FailingForegroundClientStub(ForegroundClientStub):
         return self.copied
 
 
+class ClosingSSHStreamStub:
+    """SSH stdout-like stream which starts raising once the channel is closed."""
+
+    def __init__(self, error_factory):
+        self.closed = False
+        self.error_factory = error_factory
+        self.writes = []
+
+    def write(self, data):
+        if self.closed:
+            raise self.error_factory()
+        self.writes.append(data)
+
+    def close(self):
+        self.closed = True
+
+
 def test_code_executed(call_there_group):
     out = StringIO()
     with redirect_stdout(out):
         call_there_group([], "print('hello')")
         assert out.getvalue() == "hello\n"
+
+
+@pytest.mark.parametrize(
+    "error_factory",
+    [
+        lambda: BrokenPipeError("Channel not open for sending"),
+        lambda: OSError(errno.EPIPE, "Channel not open for sending"),
+    ],
+)
+def test_log_command_closed_stdout_removes_handler_and_exits(error_factory):
+    stream = ClosingSSHStreamStub(error_factory)
+    ssh_server_closed = threading.Event()
+    listener_done = threading.Event()
+    thread_errors = []
+    root_logger = logging.getLogger()
+
+    def run_log_command():
+        try:
+            runcode(
+                LOG_COMMAND_TEMPLATE,
+                stdout=stream,
+                stderr=StringIO(),
+                namespace={"ssh_server_closed": ssh_server_closed},
+            )
+        except Exception as exc:  # pylint: disable=broad-exception-caught
+            thread_errors.append(exc)
+        finally:
+            listener_done.set()
+
+    thread = threading.Thread(target=run_log_command, daemon=True)
+    thread.start()
+
+    try:
+        for _ in range(50):
+            handlers = [
+                handler
+                for handler in root_logger.handlers
+                if getattr(handler, "stream", None) is stream
+            ]
+            if handlers:
+                break
+            listener_done.wait(0.02)
+
+        assert handlers
+
+        stream.close()
+        root_logger.warning("log record after log client disconnect")
+
+        assert listener_done.wait(1)
+        assert not thread_errors
+        assert all(
+            getattr(handler, "stream", None) is not stream
+            for handler in root_logger.handlers
+        )
+    finally:
+        ssh_server_closed.set()
+        listener_done.wait(1)
+        for handler in list(root_logger.handlers):
+            if getattr(handler, "stream", None) is stream:
+                root_logger.removeHandler(handler)
+                handler.close()
 
 
 def test_exception_on_empty_code(call_there_group):

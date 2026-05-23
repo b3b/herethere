@@ -58,6 +58,19 @@ def test_use_non_redirected_output(mocker, capfd):
     assert captured.err == "test err"
 
 
+def test_cleanup_ignored_when_standard_streams_replaced(mocker):
+    original_stdout = sys.stdout
+    original_stderr = sys.stderr
+
+    try:
+        with redirect_output(mocker.Mock(), mocker.Mock()):
+            sys.stdout = mocker.Mock()
+            sys.stderr = mocker.Mock()
+    finally:
+        sys.stdout = original_stdout
+        sys.stderr = original_stderr
+
+
 def test_flush_ignored_when_target_has_no_flush():
     wrapper = RedirectedOutputWrapper(sys.stdout)
 
