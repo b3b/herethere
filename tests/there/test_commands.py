@@ -1,4 +1,3 @@
-import asyncio
 import os
 from contextlib import redirect_stdout
 from io import StringIO
@@ -45,6 +44,22 @@ class SeparateClientInstanceStub:
         self.calls.append(("disconnect",))
 
 
+class FailingSeparateClientInstanceStub(SeparateClientInstanceStub):
+    """Separate client instance that fails while running a command."""
+
+    async def shell(self, code, stdout=None, stderr=None):
+        self.calls.append(("shell", code, stdout, stderr))
+        raise RuntimeError("shell failed")
+
+
+class FailingForegroundClientStub(ForegroundClientStub):
+    """Foreground client stub that returns a failing separate instance."""
+
+    async def copy(self):
+        self.copied = FailingSeparateClientInstanceStub(self.calls)
+        return self.copied
+
+
 def test_code_executed(call_there_group):
     out = StringIO()
     with redirect_stdout(out):
@@ -83,8 +98,8 @@ async def test_background_python_code_uses_separate_client_instance():
     )
     ctx.background = True
 
-    ctx.runcode()
-    await asyncio.sleep(0)
+    future = ctx.runcode()
+    future.result(timeout=1)
 
     assert client.calls == [
         ("runcode_background", "# %%there ... \nprint('hello')", stdout, stderr),
@@ -101,11 +116,28 @@ async def test_background_shell_uses_separate_client_instance():
     ctx = ContextObject(client=client, code="echo hello", stdout=stdout, stderr=stderr)
     ctx.background = True
 
-    ctx.shell()
-    await asyncio.sleep(0)
+    future = ctx.shell()
+    future.result(timeout=1)
 
     assert client.calls == [
         ("shell", "echo hello", stdout, stderr),
+        ("disconnect",),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_background_command_disconnects_separate_client_after_failure():
+    """Background command cleanup must run if the command fails."""
+    client = FailingForegroundClientStub()
+    ctx = ContextObject(client=client, code="echo hello", stdout=StringIO())
+    ctx.background = True
+
+    future = ctx.shell()
+    with pytest.raises(RuntimeError, match="shell failed"):
+        future.result(timeout=1)
+
+    assert client.calls == [
+        ("shell", "echo hello", ctx.stdout, None),
         ("disconnect",),
     ]
 
@@ -122,13 +154,13 @@ async def test_background_command_with_display_sets_context_background():
         stderr=stderr,
     )
 
-    there_group(
+    future = there_group(
         ["--background"],
         "test",
         standalone_mode=False,
         obj=ctx,
     )
-    await asyncio.sleep(0)
+    future.result(timeout=1)
 
     assert ctx.background is True
 

@@ -1,7 +1,5 @@
 """here.magic"""
 
-import asyncio
-
 from IPython.core import magic_arguments
 from IPython.core.magic import (
     line_magic,
@@ -9,6 +7,7 @@ from IPython.core.magic import (
 )
 from IPython.core.magic_arguments import parse_argstring
 
+from herethere.everywhere.loop import run_sync
 from herethere.everywhere.magic import MagicEverywhere
 from herethere.here import ServerConfig, start_server
 
@@ -33,5 +32,5 @@ class MagicHere(MagicEverywhere):
         """Start a remote connections listener."""
         args = parse_argstring(self.start_server, line)
         config = ServerConfig.load(path=args.config, prefix="here")
-        self.server = asyncio.run(start_server(config))
+        self.server = run_sync(start_server(config))
         print("Server started")

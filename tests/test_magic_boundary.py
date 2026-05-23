@@ -3,8 +3,6 @@ import importlib
 import sys
 import types
 
-from IPython.core.interactiveshell import InteractiveShell
-
 from herethere import magic
 
 
@@ -42,16 +40,15 @@ def test_fake_shell_construction_does_not_import_patcher(monkeypatch):
     MagicHere(shell=object())
 
 
-def test_real_ipython_shell_construction_applies_patcher(monkeypatch, mocker, tmp_path):
+def test_real_ipython_shell_construction_does_not_import_patcher(monkeypatch, tmp_path):
+    from IPython.core.interactiveshell import InteractiveShell  # noqa: PLC0415
+
+    _fail_on_patcher_import(monkeypatch)
     monkeypatch.setenv("IPYTHONDIR", str(tmp_path))
-    patcher = types.SimpleNamespace(apply=mocker.Mock())
-    monkeypatch.setitem(sys.modules, "nest_asyncio2", patcher)
 
     from herethere.here.magic import MagicHere  # noqa: PLC0415
 
     MagicHere(shell=InteractiveShell())
-
-    patcher.apply.assert_called_once_with()
 
 
 def test_load_ipython_extension_registers_magics(mocker):

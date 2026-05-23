@@ -1,6 +1,6 @@
 """there.magic"""
 
-import asyncio
+from concurrent.futures import Future
 
 from IPython.core import magic_arguments
 from IPython.core.magic import (
@@ -12,6 +12,8 @@ from IPython.core.magic_arguments import parse_argstring
 from IPython.display import display
 
 from herethere.everywhere import ConnectionConfig
+from herethere.everywhere.logging import logger
+from herethere.everywhere.loop import run_sync
 from herethere.everywhere.magic import MagicEverywhere
 from herethere.there.client import Client
 from herethere.there.commands import ContextObject, NeedDisplay, there_group
@@ -25,6 +27,7 @@ class MagicThere(MagicEverywhere):
     def __init__(self, shell):
         super().__init__(shell)
         self.client = Client()
+        self.background_futures: set[Future] = set()
 
     @line_magic("connect-there")
     @magic_arguments.magic_arguments()
@@ -38,17 +41,17 @@ class MagicThere(MagicEverywhere):
         """Connect to remote interpreter."""
         args = parse_argstring(self.connect, line)
         config = ConnectionConfig.load(path=args.config, prefix="there")
-        asyncio.run(self.client.connect(config))
+        run_sync(self.client.connect(config))
 
     @line_magic("there")
     @cell_magic("there")
-    def there(self, line, cell="") -> str:
+    def there(self, line, cell="") -> None:
         """Execute command on remote side."""
         # pylint: disable=too-many-function-args,unexpected-keyword-arg
 
         def run(obj):
             # pylint: disable=no-value-for-parameter
-            there_group(
+            return there_group(
                 line.split(),
                 "there",
                 standalone_mode=False,
@@ -56,8 +59,31 @@ class MagicThere(MagicEverywhere):
             )
 
         try:
-            run(ContextObject(self.client, cell))
+            future = run(ContextObject(self.client, cell))
         except NeedDisplay as exc:
             out = LimitedOutput(maxlen=exc.maxlen)
             display(out)
-            run(ContextObject(self.client, cell, stdout=out, stderr=out))
+            future = run(ContextObject(self.client, cell, stdout=out, stderr=out))
+
+        self._observe_background_future(future)
+
+    def _observe_background_future(self, future):
+        """Track fire-and-forget background work and log failures."""
+        if not isinstance(future, Future):
+            return
+
+        self.background_futures.add(future)
+
+        def done(completed):
+            self.background_futures.discard(completed)
+            if completed.cancelled():
+                return
+            exc = completed.exception()
+            if exc is None:
+                return
+            logger.error(
+                "Background %%there command failed.",
+                exc_info=(type(exc), exc, exc.__traceback__),
+            )
+
+        future.add_done_callback(done)

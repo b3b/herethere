@@ -1,6 +1,5 @@
 """herethere.there.commands.core"""
 
-import asyncio
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -9,6 +8,7 @@ from typing import TextIO
 
 import click
 
+from herethere.everywhere.loop import run_background, run_sync
 from herethere.there.client import Client
 
 
@@ -42,9 +42,8 @@ class ContextObject:
         code = "# %%there ... \n" + self.code
 
         if self.background:
-            self._run_background_command("runcode_background", code)
-        else:
-            self._run_command("runcode", code)
+            return self._run_background_command("runcode_background", code)
+        return self._run_command("runcode", code)
 
     def shell(self):
         """Execute shell command on the remote side."""
@@ -52,25 +51,26 @@ class ContextObject:
             raise EmptyCode("Code to execute is not specified.")
 
         if self.background:
-            self._run_background_command("shell", self.code)
-        else:
-            self._run_command("shell", self.code)
+            return self._run_background_command("shell", self.code)
+        return self._run_command("shell", self.code)
 
     def _run_command(self, command: str, code: str):
         """Execute SSH command with a code."""
         handler = getattr(self.client, command)
-        asyncio.run(handler(code, stdout=self.stdout, stderr=self.stderr))
+        run_sync(handler(code, stdout=self.stdout, stderr=self.stderr))
 
     def _run_background_command(self, command: str, code: str):
         """Execute SSH command with a code, in background."""
 
         async def run():
             client = await self.client.copy()
-            handler = getattr(client, command)
-            await handler(code, stdout=self.stdout, stderr=self.stderr)
-            await client.disconnect()
+            try:
+                handler = getattr(client, command)
+                await handler(code, stdout=self.stdout, stderr=self.stderr)
+            finally:
+                await client.disconnect()
 
-        asyncio.create_task(run())
+        return run_background(run())
 
 
 @click.group(invoke_without_command=True)
@@ -102,14 +102,15 @@ def there_group(ctx, background, limit, delay):
         time.sleep(delay)
     if ctx.invoked_subcommand is None:
         # Execute python code if no command specified
-        ctx.obj.runcode()
+        return ctx.obj.runcode()
+    return None
 
 
 @there_group.command()
 @click.pass_context
 def shell(ctx):
     """Execute shell command on remote side."""
-    ctx.obj.shell()
+    return ctx.obj.shell()
 
 
 @there_group.command()
@@ -120,7 +121,7 @@ def upload(ctx, localpaths, remotepath):
     """Upload files and directories to `remotepath`."""
     if len(localpaths) == 1:
         localpaths = localpaths[0]
-    asyncio.run(ctx.obj.client.upload(localpaths, remotepath))
+    return run_sync(ctx.obj.client.upload(localpaths, remotepath))
 
 
 def there_code_shortcut(
@@ -138,7 +139,7 @@ def there_code_shortcut(
     @wraps(handler)
     def _wrapper(ctx, *args, **kwargs):
         ctx.obj.code = handler(ctx.obj.code, *args, **kwargs)
-        ctx.obj.runcode()
+        return ctx.obj.runcode()
 
     _wrapper.__click_params__ = getattr(handler, "__click_params__", [])
 

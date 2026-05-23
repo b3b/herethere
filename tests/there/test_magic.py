@@ -1,3 +1,4 @@
+from concurrent.futures import Future
 from contextlib import redirect_stdout
 from io import StringIO
 
@@ -42,7 +43,7 @@ def test_connect_magic_connects_client(mocker, tmp_environ):
         "connect",
         new=mocker.Mock(return_value="connect-result"),
     )
-    run = mocker.patch("herethere.there.magic.asyncio.run")
+    run = mocker.patch("herethere.there.magic.run_sync")
 
     magic.connect("")
 
@@ -81,6 +82,49 @@ def test_error_line_number(capfd, call_there_group):
     captured = capfd.readouterr()
     assert 'File "<string>", line 2\n' in captured.err
     assert "SyntaxError:" in captured.err
+
+
+def test_background_future_is_observed(mocker):
+    future = Future()
+    command = mocker.patch("herethere.there.magic.there_group", return_value=future)
+    magic = MagicThere(shell=None)
+
+    result = magic.there("-b", "print('hello')")
+
+    assert result is None
+    assert future in magic.background_futures
+    command.assert_called_once()
+
+    future.set_result(None)
+
+    assert future not in magic.background_futures
+
+
+def test_background_future_exception_is_logged(mocker):
+    future = Future()
+    mocker.patch("herethere.there.magic.there_group", return_value=future)
+    logger = mocker.patch("herethere.there.magic.logger")
+    magic = MagicThere(shell=None)
+
+    magic.there("-b", "print('hello')")
+    exc = RuntimeError("background failed")
+    future.set_exception(exc)
+
+    logger.error.assert_called_once()
+    assert logger.error.call_args.args[0] == "Background %%there command failed."
+
+
+def test_cancelled_background_future_is_not_logged(mocker):
+    future = Future()
+    mocker.patch("herethere.there.magic.there_group", return_value=future)
+    logger = mocker.patch("herethere.there.magic.logger")
+    magic = MagicThere(shell=None)
+
+    magic.there("-b", "print('hello')")
+    future.cancel()
+
+    logger.error.assert_not_called()
+    assert future not in magic.background_futures
 
 
 @pytest.mark.asyncio
