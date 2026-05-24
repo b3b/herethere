@@ -15,6 +15,7 @@ from herethere.there.commands.core import (
     ContextObject,
     EmptyCode,
     NeedDisplay,
+    raw_remainder_after_command,
     there_code_shortcut,
     there_group,
 )
@@ -315,6 +316,43 @@ def test_get_command_sets_expression_from_line():
     assert ctx.code == "1 + 2"
 
 
+def test_get_command_prefers_raw_line_expression():
+    ctx = ContextObject(
+        client=GetClientStub(),
+        code="",
+        raw_line='--delay 0 get "a  b"',
+    )
+
+    there_group(
+        ["--delay", "0", "get", "a  b"],
+        "test",
+        standalone_mode=False,
+        obj=ctx,
+    )
+
+    assert ctx.code == '"a  b"'
+
+
+def test_raw_remainder_after_command_returns_empty_without_raw_line():
+    ctx = click.Context(
+        click.Command("get"),
+        info_name="get",
+        obj=ContextObject(GetClientStub(), ""),
+    )
+
+    assert raw_remainder_after_command(ctx) == ""
+
+
+def test_raw_remainder_after_command_returns_empty_when_command_missing():
+    ctx = click.Context(
+        click.Command("get"),
+        info_name="get",
+        obj=ContextObject(GetClientStub(), "", raw_line="shell echo hello"),
+    )
+
+    assert raw_remainder_after_command(ctx) == ""
+
+
 def test_exception_on_empty_shell_code(call_there_group):
     with pytest.raises(EmptyCode):
         call_there_group(["shell"], "")
@@ -343,6 +381,35 @@ def test_multiple_files_uploaded_to_directory(tmpdir, call_there_group):
     for path in Path(tmpdir) / "hello.txt", Path(tmpdir) / "hello/there.txt":
         with open(path) as f:
             assert f.read() == "hello\n"
+
+
+def test_file_downloaded(tmpdir, call_there_group):
+    remote_path = Path(tmpdir) / "hello_remote.txt"
+    local_path = Path(tmpdir) / "hello_local.txt"
+    remote_path.write_text("hello remote\n")
+    assert not os.path.exists(local_path)
+
+    call_there_group(["download", "hello_remote.txt", str(local_path)], "")
+
+    assert local_path.read_text() == "hello remote\n"
+
+
+def test_multiple_files_downloaded_to_directory(tmpdir, call_there_group):
+    remote_file = Path(tmpdir) / "hello_remote.txt"
+    remote_dir = Path(tmpdir) / "remote_dir"
+    local_dir = Path(tmpdir) / "downloads"
+    remote_file.write_text("hello remote\n")
+    remote_dir.mkdir()
+    (remote_dir / "there.txt").write_text("hello there\n")
+    assert not os.path.exists(local_dir)
+
+    call_there_group(
+        ["download", "hello_remote.txt", "remote_dir", str(local_dir)],
+        "",
+    )
+
+    assert (local_dir / "hello_remote.txt").read_text() == "hello remote\n"
+    assert (local_dir / "remote_dir/there.txt").read_text() == "hello there\n"
 
 
 def test_there_code_shortcut(call_there_group):

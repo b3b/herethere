@@ -5,6 +5,7 @@ from .core import (
     NeedDisplay,
     there_code_shortcut,
     there_group,
+    there_raw_remainder,
 )
 
 __all__ = (
@@ -12,4 +13,5 @@ __all__ = (
     "NeedDisplay",
     "there_code_shortcut",
     "there_group",
+    "there_raw_remainder",
 )

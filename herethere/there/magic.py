@@ -1,5 +1,6 @@
 """there.magic"""
 
+import shlex
 from concurrent.futures import Future
 
 from IPython.core import magic_arguments
@@ -52,22 +53,31 @@ class MagicThere(MagicEverywhere):
     def there(self, line, cell=""):
         """Execute command on remote side."""
         # pylint: disable=too-many-function-args,unexpected-keyword-arg
+        args = shlex.split(line)
 
         def run(obj):
             # pylint: disable=no-value-for-parameter
             return there_group(
-                line.split(),
+                args,
                 "there",
                 standalone_mode=False,
                 obj=obj,
             )
 
         try:
-            future = run(ContextObject(self.client, cell))
+            future = run(ContextObject(self.client, cell, raw_line=line))
         except NeedDisplay as exc:
             out = LimitedOutput(maxlen=exc.maxlen)
             display(out)
-            future = run(ContextObject(self.client, cell, stdout=out, stderr=out))
+            future = run(
+                ContextObject(
+                    self.client,
+                    cell,
+                    stdout=out,
+                    stderr=out,
+                    raw_line=line,
+                )
+            )
 
         self._observe_background_future(future)
         if isinstance(future, Future):

@@ -115,7 +115,7 @@ The expression is evaluated in the same remote namespace used by `%there` and
 Returned values are serialized with pickle. Nested values are supported when
 every contained object is pickle-serializable, and any custom classes must be
 available in the local environment. `%there get` is intended for small to
-medium inspectable values; for large data, return a summary or transfer a file
+medium inspectable values; for large data, return a summary or use `download`
 instead. To avoid accidental large transfers, values whose pickle payload is
 larger than 32 MiB are rejected by default.
 
@@ -125,7 +125,8 @@ larger than 32 MiB are rejected by default.
 %there upload --help
 ```
 
-*upload* root directory is set by the `HERE_CHROOT` value of the here-server config.
+The SFTP root directory is set by the `HERE_CHROOT` value of the here-server
+config.
 
 ```python
 !touch some.ico script.py
@@ -139,6 +140,34 @@ larger than 32 MiB are rejected by default.
 ```python
 %%there shell
 ls some.ico script.py
+```
+
+#### download
+
+```python
+%there download --help
+```
+
+Files and directories are downloaded from the same SFTP root used by
+`%there upload`.
+
+```python
+%there download some.ico ./some.ico
+```
+
+```python
+%there download dir1 ./downloaded-dir1
+```
+
+For large data, write a file remotely and download it:
+
+```python
+%%there
+data.to_csv("test-data.csv")
+```
+
+```python
+%there download test-data.csv ./test-data.csv
 ```
 
 #### log

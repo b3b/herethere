@@ -140,7 +140,7 @@ class Client:
 
                 return loads_value(message)
 
-    async def upload(self, localpaths: list[str], remotepath) -> str:
+    async def upload(self, localpaths: list[str], remotepath) -> None:
         """Upload files and directories to remote via SFTP."""
         async with self.connection as ssh:
             async with ssh.start_sftp_client() as sftp:
@@ -151,9 +151,31 @@ class Client:
                     progress_handler=self.sftp_progress_handler,
                 )
 
-    def sftp_progress_handler(self, *args, **kwargs):
-        """SFTP uploading progress handler."""
-        logger.debug("SFTP progress: %s %s", args, kwargs)
+    async def download(self, remotepaths: list[str], localpath) -> None:
+        """Download files and directories from remote via SFTP."""
+        async with self.connection as ssh:
+            async with ssh.start_sftp_client() as sftp:
+                await sftp.get(
+                    remotepaths=remotepaths,
+                    localpath=localpath,
+                    recurse=True,
+                    sparse=False,
+                    block_size=256 * 1024,
+                    max_requests=16,
+                    progress_handler=self.sftp_progress_handler,
+                )
+
+    def sftp_progress_handler(self, srcpath, dstpath, copied, total):
+        """Log SFTP transfer progress."""
+        percent = copied / total * 100 if total else 100
+        logger.debug(
+            "SFTP progress: %s -> %s: %s/%s bytes (%.1f%%)",
+            srcpath,
+            dstpath,
+            copied,
+            total,
+            percent,
+        )
 
     async def _execute_code(
         self,

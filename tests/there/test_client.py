@@ -187,6 +187,29 @@ async def test_file_uploaded(there, tmpdir):
 
 
 @pytest.mark.asyncio
+async def test_file_downloaded(there, tmpdir):
+    remote_path = Path(tmpdir) / "hello_remote.txt"
+    local_path = Path(tmpdir) / "hello_local.txt"
+    remote_path.write_text("hello remote\n")
+
+    await there.download("hello_remote.txt", local_path)
+
+    assert local_path.read_text() == "hello remote\n"
+
+
+@pytest.mark.asyncio
+async def test_directory_downloaded(there, tmpdir):
+    remote_path = Path(tmpdir) / "remote_dir"
+    local_path = Path(tmpdir) / "local_dir"
+    remote_path.mkdir()
+    (remote_path / "hello.txt").write_text("hello remote\n")
+
+    await there.download("remote_dir", local_path)
+
+    assert (local_path / "hello.txt").read_text() == "hello remote\n"
+
+
+@pytest.mark.asyncio
 async def test_connection_copied(there):
     connection = await there.copy()
     try:
@@ -253,7 +276,14 @@ def test_sftp_progress_handler_logs(mocker):
 
     client.sftp_progress_handler("src", "dst", 1, 2)
 
-    logger.debug.assert_called_once()
+    logger.debug.assert_called_once_with(
+        "SFTP progress: %s -> %s: %s/%s bytes (%.1f%%)",
+        "src",
+        "dst",
+        1,
+        2,
+        50.0,
+    )
 
 
 class ReaderOnce:

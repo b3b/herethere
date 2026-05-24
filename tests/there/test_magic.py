@@ -12,7 +12,8 @@ from herethere.there.output import LimitedOutput
 
 class GetClientStub:
     async def get(self, expression):
-        return eval(expression)  # pylint: disable=eval-used
+        namespace = {"result": {"latest one": "ok"}}
+        return eval(expression, namespace)  # pylint: disable=eval-used
 
 
 @pytest_asyncio.fixture
@@ -70,6 +71,14 @@ def test_code_executed(call_there_group):
         ["shell", "echo 1", ["shell"], "echo 1"],
         ["upload tests/hello.txt dst", "", ["upload", "tests/hello.txt", "dst"], ""],
         ["upload src1 src2 dst", "", ["upload", "src1", "src2", "dst"], ""],
+        ["download src dst", "", ["download", "src", "dst"], ""],
+        ["download src1 src2 dst", "", ["download", "src1", "src2", "dst"], ""],
+        [
+            'download "test data.csv" ./downloaded.csv',
+            "",
+            ["download", "test data.csv", "./downloaded.csv"],
+            "",
+        ],
     ),
 )
 def test_there_command_called(
@@ -124,6 +133,15 @@ def test_there_get_cell_magic_uses_cell_expression():
     magic.client = GetClientStub()
 
     assert magic.there("get", '"a  b"') == "a  b"
+
+
+def test_there_get_magic_preserves_python_expression_quotes():
+    magic = MagicThere(shell=None)
+    magic.client = GetClientStub()
+
+    assert magic.there('get result["latest one"]') == "ok"
+    assert magic.there('get "a  b"') == "a  b"
+    assert magic.there('--delay 0 get result["latest one"]') == "ok"
 
 
 def test_background_future_exception_is_logged(mocker):

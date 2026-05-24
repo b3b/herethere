@@ -64,6 +64,24 @@ class CommandClient:
                 target.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(source, target)
 
+    async def download(self, remotepaths, localpath):
+        if isinstance(remotepaths, str):
+            remotepaths = [remotepaths]
+
+        destination = Path(localpath)
+        multiple_sources = len(remotepaths) > 1
+        if multiple_sources:
+            destination.mkdir(parents=True, exist_ok=True)
+
+        for remotepath in remotepaths:
+            source = self.chroot / remotepath
+            target = destination / source.name if multiple_sources else destination
+            if source.is_dir():
+                shutil.copytree(source, target, dirs_exist_ok=True)
+            else:
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(source, target)
+
 
 @pytest.fixture
 def connection_config(monkeypatch, unused_tcp_port):

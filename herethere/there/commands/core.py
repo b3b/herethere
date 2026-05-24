@@ -1,5 +1,6 @@
 """herethere.there.commands.core"""
 
+import re
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -33,6 +34,8 @@ class ContextObject:
     stdout: TextIO = None
     stderr: TextIO = None
     background: bool = False
+    raw_line: str | None = None
+    raw_remainder: str | None = None
 
     def runcode(self):
         """Execute python code on the remote side."""
@@ -121,14 +124,52 @@ def shell(ctx):
     return ctx.obj.shell()
 
 
+def there_raw_remainder(func):
+    """Decorator for Click commands that consume raw text after their name.
+
+    IPython magic lines are parsed with ``shlex.split()`` before Click sees
+    them so normal commands can accept quoted paths like ``"test data.csv"``.
+    That shell-style parsing removes quotes which may be meaningful Python
+    source for expression commands, for example ``result["latest one"]``.
+
+    Decorate commands which interpret their arguments as source text. The
+    command still receives normal Click arguments, but ``ctx.obj.raw_remainder``
+    contains the original unparsed text after the command name when the command
+    was invoked from magic.
+    """
+
+    @wraps(func)
+    def _wrapper(*args, **kwargs):
+        ctx = click.get_current_context()
+        ctx.obj.raw_remainder = raw_remainder_after_command(ctx)
+        return func(*args, **kwargs)
+
+    return _wrapper
+
+
 @there_group.command("get", context_settings={"ignore_unknown_options": True})
+@there_raw_remainder
 @click.pass_context
 @click.argument("expression", nargs=-1, type=click.UNPROCESSED)
 def get_value(ctx, expression):
     """Evaluate expression on remote side and return its value."""
     if expression:
-        ctx.obj.code = " ".join(expression)
+        ctx.obj.code = ctx.obj.raw_remainder or " ".join(expression)
     return ctx.obj.get()
+
+
+def raw_remainder_after_command(ctx: click.Context) -> str:
+    """Return raw text after the current command name in the magic line."""
+    line = getattr(ctx.obj, "raw_line", None)
+    if not line or not ctx.info_name:
+        return ""
+
+    pattern = rf"(?<!\S){re.escape(ctx.info_name)}(?!\S)"
+    match = re.search(pattern, line)
+    if not match:
+        return ""
+
+    return line[match.end() :].lstrip()
 
 
 @there_group.command()
@@ -140,6 +181,17 @@ def upload(ctx, localpaths, remotepath):
     if len(localpaths) == 1:
         localpaths = localpaths[0]
     return run_sync(ctx.obj.client.upload(localpaths, remotepath))
+
+
+@there_group.command()
+@click.pass_context
+@click.argument("remotepaths", nargs=-1, required=True)
+@click.argument("localpath", type=click.Path(), nargs=1)
+def download(ctx, remotepaths, localpath):
+    """Download files and directories to `localpath`."""
+    if len(remotepaths) == 1:
+        remotepaths = remotepaths[0]
+    return run_sync(ctx.obj.client.download(remotepaths, localpath))
 
 
 def there_code_shortcut(

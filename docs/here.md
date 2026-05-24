@@ -53,7 +53,7 @@ HERE_PASSWORD=xxx
 # Path to store the generated private key
 HERE_KEY_PATH=./key.rsa
 
-# Path to the root directory for the SFTP session (%upload command)
+# Path to the root directory for the SFTP session (%there upload/download commands)
 HERE_CHROOT=.
 ```
 
