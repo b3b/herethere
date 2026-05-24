@@ -5,6 +5,12 @@ from pathlib import Path
 import pytest
 
 from herethere.everywhere import ConnectionConfig, config, runcode
+from herethere.everywhere.values import (
+    RemoteValueError,
+    dumps_error,
+    dumps_value,
+    loads_value,
+)
 
 code_with_definition = """
 def foo(a, b):
@@ -65,6 +71,38 @@ def test_runcode_namespace_used():
         == "333\n"
     )
     assert runcode_global_var == 333
+
+
+def test_value_serialization_round_trips_nested_values():
+    value = {"numbers": [1, 2, 3], "shape": (2, 3), "meta": {"ok": True}}
+
+    assert loads_value(dumps_value(value)) == value
+
+
+def test_value_serialization_rejects_oversized_payload():
+    with pytest.raises(ValueError, match="too large"):
+        dumps_value("large", max_payload_size=0)
+
+
+def test_value_error_deserialization_raises_remote_value_error():
+    message = dumps_error(NameError("missing"), "Traceback text")
+
+    with pytest.raises(RemoteValueError, match="NameError: missing"):
+        loads_value(message)
+
+
+def test_value_deserialization_rejects_unknown_serializer():
+    message = '{"type": "value", "serializer": "json", "data": ""}'
+
+    with pytest.raises(ValueError, match="Unknown serializer"):
+        loads_value(message)
+
+
+def test_value_deserialization_rejects_unexpected_event_type():
+    message = '{"type": "progress"}'
+
+    with pytest.raises(ValueError, match="Unexpected remote value event"):
+        loads_value(message)
 
 
 @pytest.mark.parametrize(

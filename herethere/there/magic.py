@@ -16,7 +16,11 @@ from herethere.everywhere.logging import logger
 from herethere.everywhere.loop import run_sync
 from herethere.everywhere.magic import MagicEverywhere
 from herethere.there.client import Client
-from herethere.there.commands import ContextObject, NeedDisplay, there_group
+from herethere.there.commands import (
+    ContextObject,
+    NeedDisplay,
+    there_group,
+)
 from herethere.there.output import LimitedOutput
 
 
@@ -45,7 +49,7 @@ class MagicThere(MagicEverywhere):
 
     @line_magic("there")
     @cell_magic("there")
-    def there(self, line, cell="") -> None:
+    def there(self, line, cell=""):
         """Execute command on remote side."""
         # pylint: disable=too-many-function-args,unexpected-keyword-arg
 
@@ -66,6 +70,9 @@ class MagicThere(MagicEverywhere):
             future = run(ContextObject(self.client, cell, stdout=out, stderr=out))
 
         self._observe_background_future(future)
+        if isinstance(future, Future):
+            return None
+        return future
 
     def _observe_background_future(self, future):
         """Track fire-and-forget background work and log failures."""

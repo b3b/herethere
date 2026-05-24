@@ -12,6 +12,7 @@ import asyncssh
 
 from herethere.everywhere.config import ConnectionConfig
 from herethere.everywhere.logging import logger
+from herethere.everywhere.values import loads_value
 
 
 class ConnectionNotConfiguredError(Exception):
@@ -119,6 +120,25 @@ class Client:
     ) -> str:
         """Execute shell command on the remote side."""
         await self._execute_code("shell", code, stdout, stderr)
+
+    async def get(self, expression: str):
+        """Evaluate a Python expression remotely and return its Python value."""
+        async with self.connection as ssh:
+            async with ssh.create_process("value") as process:
+                process.stdin.write(expression)
+                process.stdin.write_eof()
+
+                message = await process.stdout.read()
+                await process.wait()
+
+                if not message:
+                    stderr = await process.stderr.read()
+                    message = "Remote value command returned no output."
+                    if stderr:
+                        message += f"\nRemote stderr:\n{stderr}"
+                    raise RuntimeError(message)
+
+                return loads_value(message)
 
     async def upload(self, localpaths: list[str], remotepath) -> str:
         """Upload files and directories to remote via SFTP."""

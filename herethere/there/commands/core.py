@@ -54,6 +54,14 @@ class ContextObject:
             return self._run_background_command("shell", self.code)
         return self._run_command("shell", self.code)
 
+    def get(self):
+        """Evaluate a Python expression on the remote side."""
+        if self.background:
+            raise click.ClickException("get cannot be used with --background.")
+        if not self.code:
+            raise EmptyCode("Expression to evaluate is not specified.")
+        return run_sync(self.client.get(self.code))
+
     def _run_command(self, command: str, code: str):
         """Execute SSH command with a code."""
         handler = getattr(self.client, command)
@@ -111,6 +119,16 @@ def there_group(ctx, background, limit, delay):
 def shell(ctx):
     """Execute shell command on remote side."""
     return ctx.obj.shell()
+
+
+@there_group.command("get", context_settings={"ignore_unknown_options": True})
+@click.pass_context
+@click.argument("expression", nargs=-1, type=click.UNPROCESSED)
+def get_value(ctx, expression):
+    """Evaluate expression on remote side and return its value."""
+    if expression:
+        ctx.obj.code = " ".join(expression)
+    return ctx.obj.get()
 
 
 @there_group.command()

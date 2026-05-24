@@ -1,18 +1,23 @@
 """herethere.here.server"""
 
 import asyncio
+import inspect
 import os
 import subprocess
 import threading
+import traceback
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from functools import partial
+from io import StringIO
 from typing import Any
 
 import asyncssh
 
 from herethere.everywhere.code import runcode
 from herethere.everywhere.logging import logger
+from herethere.everywhere.redirected_output import redirect_output
+from herethere.everywhere.values import dumps_error, dumps_value
 from herethere.here.config import ServerConfig
 
 MAX_COMMAND_LENGTH = 65536  # 65537
@@ -64,6 +69,30 @@ async def handle_shell_command(process: asyncssh.SSHServerProcess, namespace: di
     await process.redirect(stdout=proc.stdout, stderr=proc.stderr)
 
 
+async def maybe_await(value):
+    """Await value if it is awaitable."""
+    if inspect.isawaitable(value):
+        return await value
+    return value
+
+
+async def handle_value_command(process: asyncssh.SSHServerProcess, namespace: dict):
+    """Handler for SSH command 'value': evaluate and return one Python value."""
+    data = await process.stdin.read(MAX_COMMAND_LENGTH)
+
+    try:
+        with redirect_output(stdout=StringIO(), stderr=StringIO()):
+            result = eval(data, namespace)  # pylint: disable=eval-used
+            result = await maybe_await(result)
+        event = dumps_value(result)
+    except Exception as exc:  # pylint: disable=broad-exception-caught
+        event = dumps_error(exc, traceback.format_exc())
+
+    process.stdout.write(event)
+    process.stdout.write("\n")
+    await process.stdout.drain()
+
+
 async def handle_client(process: asyncssh.SSHServerProcess, namespace: dict):
     """SSH requests handler."""
 
@@ -88,6 +117,7 @@ async def handle_client(process: asyncssh.SSHServerProcess, namespace: dict):
             "code": handle_code_command,
             "background": handle_background_code_command,
             "shell": handle_shell_command,
+            "value": handle_value_command,
         }[process.command]
     except KeyError:
         logger.error("Unknown command: %s", process.command[:64])

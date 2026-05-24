@@ -94,6 +94,31 @@ while :; do
 done
 ```
 
+#### get
+
+Evaluate one Python expression on the remote side and return the result as a
+local Python value.
+
+```python
+%%there
+x = 10
+```
+
+```python
+value = %there get x + 1
+value
+```
+
+The expression is evaluated in the same remote namespace used by `%there` and
+`%%there`.
+
+Returned values are serialized with pickle. Nested values are supported when
+every contained object is pickle-serializable, and any custom classes must be
+available in the local environment. `%there get` is intended for small to
+medium inspectable values; for large data, return a summary or transfer a file
+instead. To avoid accidental large transfers, values whose pickle payload is
+larger than 32 MiB are rejected by default.
+
 #### upload
 
 ```python
@@ -161,6 +186,11 @@ await client.connect(config)
 
 ```python
 await client.runcode("print('Hello there :)')")
+```
+
+```python
+await client.runcode("x = 10")
+value = await client.get("x + 1")
 ```
 
 ```python

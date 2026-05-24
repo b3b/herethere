@@ -32,6 +32,9 @@ class CommandClient:
             namespace=self.namespace,
         )
 
+    async def get(self, expression):
+        return eval(expression, self.namespace)  # pylint: disable=eval-used
+
     async def shell(self, code, stdout=None, stderr=None):
         result = subprocess.run(
             code,
@@ -115,7 +118,7 @@ async def there(server_instance, connection_config):
 @pytest.fixture
 def call_there_group(tmpdir):
     def _callable(args, code):
-        there_group(
+        return there_group(
             args,
             "test",
             standalone_mode=False,

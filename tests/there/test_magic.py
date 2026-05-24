@@ -10,6 +10,11 @@ from herethere.there.commands import NeedDisplay
 from herethere.there.output import LimitedOutput
 
 
+class GetClientStub:
+    async def get(self, expression):
+        return eval(expression)  # pylint: disable=eval-used
+
+
 @pytest_asyncio.fixture
 async def connected_there(server_instance, connection_config):
     magic = MagicThere(shell=None)
@@ -98,6 +103,27 @@ def test_background_future_is_observed(mocker):
     future.set_result(None)
 
     assert future not in magic.background_futures
+
+
+def test_there_magic_returns_foreground_result(mocker):
+    mocker.patch("herethere.there.magic.there_group", return_value=11)
+    magic = MagicThere(shell=None)
+
+    assert magic.there("get x + 1") == 11
+
+
+def test_there_get_magic_calls_get_command():
+    magic = MagicThere(shell=None)
+    magic.client = GetClientStub()
+
+    assert magic.there("get 10 + 1") == 11
+
+
+def test_there_get_cell_magic_uses_cell_expression():
+    magic = MagicThere(shell=None)
+    magic.client = GetClientStub()
+
+    assert magic.there("get", '"a  b"') == "a  b"
 
 
 def test_background_future_exception_is_logged(mocker):

@@ -65,6 +65,11 @@ class FailingForegroundClientStub(ForegroundClientStub):
         return self.copied
 
 
+class GetClientStub:
+    async def get(self, expression):
+        return eval(expression)  # pylint: disable=eval-used
+
+
 class ClosingSSHStreamStub:
     """SSH stdout-like stream which starts raising once the channel is closed."""
 
@@ -260,6 +265,54 @@ def test_shell_command_executed(call_there_group):
     with redirect_stdout(out):
         call_there_group(["shell"], " echo hello")
         assert out.getvalue() == "hello\n"
+
+
+def test_get_command_returns_value(call_there_group):
+    result = call_there_group(["get", "1", "+", "1"], "")
+
+    assert result == 2
+
+
+def test_get_command_uses_cell_when_expression_not_in_line(call_there_group):
+    assert call_there_group(["get"], "1 + 2") == 3
+
+
+def test_get_command_rejects_empty_expression(call_there_group):
+    with pytest.raises(EmptyCode, match="Expression to evaluate"):
+        call_there_group(["get"], "")
+
+
+def test_get_command_rejects_background():
+    stdout = StringIO()
+    stderr = StringIO()
+    ctx = ContextObject(
+        client=GetClientStub(),
+        code="1 + 1",
+        stdout=stdout,
+        stderr=stderr,
+    )
+
+    with pytest.raises(click.ClickException, match="get cannot be used"):
+        there_group(
+            ["--background", "get"],
+            "test",
+            standalone_mode=False,
+            obj=ctx,
+        )
+
+
+def test_get_command_sets_expression_from_line():
+    ctx = ContextObject(client=GetClientStub(), code="")
+
+    result = there_group(
+        ["get", "1", "+", "2"],
+        "test",
+        standalone_mode=False,
+        obj=ctx,
+    )
+
+    assert result == 3
+    assert ctx.code == "1 + 2"
 
 
 def test_exception_on_empty_shell_code(call_there_group):

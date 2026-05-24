@@ -6,6 +6,7 @@ from pathlib import Path
 import asyncssh
 import pytest
 
+from herethere.everywhere.values import RemoteValueError, dumps_error, dumps_value
 from herethere.there.client import (
     Client,
     ConnectionNotConfiguredError,
@@ -137,6 +138,48 @@ async def test_shell_command_executed(there):
 
 
 @pytest.mark.asyncio
+async def test_get_returns_simple_value(there):
+    await there.runcode("x = 41")
+
+    assert await there.get("x + 1") == 42
+
+
+@pytest.mark.asyncio
+async def test_get_ignores_remote_expression_stdout(there):
+    assert await there.get("print('noisy') or 1") == 1
+
+
+@pytest.mark.asyncio
+async def test_get_returns_nested_value(there):
+    await there.runcode(
+        "data = {\n"
+        "    'numbers': [1, 2, 3],\n"
+        "    'shape': (2, 3),\n"
+        "    'meta': {'ok': True},\n"
+        "}\n"
+    )
+
+    assert await there.get("data") == {
+        "numbers": [1, 2, 3],
+        "shape": (2, 3),
+        "meta": {"ok": True},
+    }
+
+
+@pytest.mark.asyncio
+async def test_get_remote_error(there):
+    with pytest.raises(RemoteValueError, match="NameError"):
+        await there.get("missing_name")
+
+
+@pytest.mark.asyncio
+async def test_get_awaits_coroutine(there):
+    await there.runcode("async def answer():\n    return 42\n")
+
+    assert await there.get("answer()") == 42
+
+
+@pytest.mark.asyncio
 async def test_file_uploaded(there, tmpdir):
     await there.upload("tests/hello.txt", "hello_remote.txt")
     with open(Path(tmpdir) / "hello_remote.txt") as f:
@@ -217,6 +260,9 @@ class ReaderOnce:
     def __init__(self, *chunks):
         self.chunks = list(chunks)
 
+    async def read(self):
+        return self.chunks.pop(0) if self.chunks else ""
+
     async def readline(self):
         return self.chunks.pop(0) if self.chunks else ""
 
@@ -274,3 +320,66 @@ async def test_execute_code_accepts_writer_without_flush(mocker):
     process.stdin.write_eof.assert_called_once_with()
     assert stdout.written == "out"
     process.wait.assert_awaited_once_with()
+
+
+@pytest.mark.asyncio
+async def test_get_uses_value_command_and_deserializes_result(mocker):
+    process = mocker.Mock()
+    process.stdin = mocker.Mock()
+    process.stdout = ReaderOnce(dumps_value({"ok": True}) + "\n")
+    process.wait = mocker.AsyncMock()
+
+    client = Client()
+    client.connection = FakeConnectionContext(process)
+
+    assert await client.get("{'ok': True}") == {"ok": True}
+    assert process.command == "value"
+    process.stdin.write.assert_called_once_with("{'ok': True}")
+    process.stdin.write_eof.assert_called_once_with()
+    process.wait.assert_awaited_once_with()
+
+
+@pytest.mark.asyncio
+async def test_get_raises_remote_value_error(mocker):
+    process = mocker.Mock()
+    process.stdin = mocker.Mock()
+    process.stdout = ReaderOnce(dumps_error(NameError("missing"), "Traceback") + "\n")
+    process.wait = mocker.AsyncMock()
+
+    client = Client()
+    client.connection = FakeConnectionContext(process)
+
+    with pytest.raises(RemoteValueError, match="NameError"):
+        await client.get("missing")
+
+
+@pytest.mark.asyncio
+async def test_get_raises_when_value_command_returns_no_output(mocker):
+    process = mocker.Mock()
+    process.stdin = mocker.Mock()
+    process.stdout = ReaderOnce("")
+    process.stderr = mocker.Mock()
+    process.stderr.read = mocker.AsyncMock(return_value="")
+    process.wait = mocker.AsyncMock()
+
+    client = Client()
+    client.connection = FakeConnectionContext(process)
+
+    with pytest.raises(RuntimeError, match="returned no output"):
+        await client.get("1 + 1")
+
+
+@pytest.mark.asyncio
+async def test_get_includes_stderr_when_value_command_returns_no_output(mocker):
+    process = mocker.Mock()
+    process.stdin = mocker.Mock()
+    process.stdout = ReaderOnce("")
+    process.stderr = mocker.Mock()
+    process.stderr.read = mocker.AsyncMock(return_value="remote failure")
+    process.wait = mocker.AsyncMock()
+
+    client = Client()
+    client.connection = FakeConnectionContext(process)
+
+    with pytest.raises(RuntimeError, match="remote failure"):
+        await client.get("1 + 1")

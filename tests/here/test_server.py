@@ -6,6 +6,7 @@ from pathlib import Path
 import asyncssh
 import pytest
 
+from herethere.everywhere.values import RemoteValueError, loads_value
 from herethere.here.server import RunningServer, SSHServerHere, start_server
 
 
@@ -386,6 +387,75 @@ async def test_global_variable_available(server_instance, connection_config):
         )
         assert not result.stderr
         assert result.stdout == "OK\n"
+
+
+@pytest.mark.asyncio
+async def test_value_command_returns_simple_value(server_instance, connection_config):
+    async with asyncssh.connect(**connection_config.asdict, known_hosts=None) as conn:
+        result = await conn.run("value", check=True, input="1 + 1")
+        assert loads_value(result.stdout) == 2
+
+
+@pytest.mark.asyncio
+async def test_value_command_captures_expression_stdout(
+    server_instance, connection_config
+):
+    async with asyncssh.connect(**connection_config.asdict, known_hosts=None) as conn:
+        result = await conn.run("value", check=True, input="print('noisy') or 1")
+
+    assert loads_value(result.stdout) == 1
+    assert "noisy" not in result.stdout
+
+
+@pytest.mark.asyncio
+async def test_value_command_uses_same_namespace(server_instance, connection_config):
+    async with asyncssh.connect(**connection_config.asdict, known_hosts=None) as conn:
+        await conn.run("code", check=True, input="value_command_var = (2, 3)")
+        result = await conn.run("value", check=True, input="value_command_var")
+        assert loads_value(result.stdout) == (2, 3)
+
+
+@pytest.mark.asyncio
+async def test_value_command_returns_remote_error(server_instance, connection_config):
+    async with asyncssh.connect(**connection_config.asdict, known_hosts=None) as conn:
+        result = await conn.run("value", check=True, input="missing_name")
+
+    with pytest.raises(RemoteValueError, match="NameError"):
+        loads_value(result.stdout)
+
+
+@pytest.mark.asyncio
+async def test_value_command_awaits_coroutine(server_instance, connection_config):
+    async with asyncssh.connect(**connection_config.asdict, known_hosts=None) as conn:
+        await conn.run(
+            "code",
+            check=True,
+            input="async def value_command_answer():\n    return 42\n",
+        )
+        result = await conn.run("value", check=True, input="value_command_answer()")
+        assert loads_value(result.stdout) == 42
+
+
+@pytest.mark.asyncio
+async def test_value_command_captures_awaitable_stdout(
+    server_instance, connection_config
+):
+    async with asyncssh.connect(**connection_config.asdict, known_hosts=None) as conn:
+        await conn.run(
+            "code",
+            check=True,
+            input=(
+                "async def value_command_noisy_answer():\n"
+                "    print('noisy')\n"
+                "    return 42\n"
+            ),
+        )
+        result = await conn.run(
+            "value", check=True, input="value_command_noisy_answer()"
+        )
+
+    assert loads_value(result.stdout) == 42
+    assert "noisy" not in result.stdout
 
 
 @pytest.mark.asyncio
