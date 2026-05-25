@@ -14,7 +14,6 @@ jupyter:
 
 # Running with AIOHTTP
 
-<!-- #region -->
 ## Run the server
 Run the SSH server on aiohttp startup
 
@@ -23,19 +22,21 @@ from aiohttp import web
 from herethere.here import ServerConfig, start_server
 
 async def start_server_here(app):
-    server = await start_server(
+    app["here_server"] = await start_server(
         ServerConfig.load(prefix="here"),
         namespace={"app": app}
     )
 
+async def stop_server_here(app):
+    await app["here_server"].stop()
+
 app = web.Application()
 app.on_startup.append(start_server_here)
+app.on_cleanup.append(stop_server_here)
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     web.run_app(app)
 ```
-<!-- #endregion -->
-
 ## Connect to the SSH server from the Jupyter
 
 ```python

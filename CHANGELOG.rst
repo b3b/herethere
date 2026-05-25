@@ -1,6 +1,20 @@
 Changelog
 =========
 
+0.2.1
+-----
+
+* Added ``%there get`` command for retrieving remote Python values
+* Added ``%there download`` command for downloading remote files and directories
+* Made single-path ``%there upload`` and ``%there download`` default to ``.`` as the destination
+* Added default local connection settings for ``here`` and ``there``
+* Renamed ``HERE_CHROOT`` to ``HERE_SFTP_ROOT`` and kept ``HERE_CHROOT`` as a deprecated alias
+* Improved ``%there`` magic command parsing, including support for quoted paths and arguments
+* Replaced nested event loop handling in Jupyter magics with a dedicated background event loop
+* Made ``here`` server logs quieter
+* Fixed port reuse after server shutdown
+* Fixed cleanup behavior for background commands and remote log streaming
+
 0.2.0
 -----
 

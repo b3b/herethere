@@ -109,7 +109,7 @@ class Client:
         stdout: TextIO | None = None,
         stderr: TextIO | None = None,
     ) -> str:
-        """Execute python code in a separate thread on the remote side."""
+        """Execute Python code in a separate thread on the remote side."""
         await self._execute_code("background", code, stdout, stderr)
 
     async def shell(

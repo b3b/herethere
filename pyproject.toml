@@ -47,9 +47,13 @@ magic = [
 
 [dependency-groups]
 dev = [
+    "aiohttp",
     "build",
     "codecov",
     "docutils",
+    "ipykernel",
+    "jupytext",
+    "nbconvert",
     "pylint",
     "pytest",
     "pytest-asyncio",
@@ -61,6 +65,7 @@ dev = [
 
 [project.urls]
 Homepage = "https://github.com/b3b/herethere"
+Changelog = "https://github.com/b3b/herethere/blob/master/CHANGELOG.rst"
 
 [tool.setuptools.dynamic]
 version = { attr = "herethere.version.__version__" }

@@ -23,7 +23,7 @@ Commands are provided by the *herethere.magic* extension.
 ```
 
 ### %here command
-**Start a remote connections listener.**
+**Start a listener for remote connections.**
 
 Command takes single optional argument: location of server config.<br>
 If argument is not provided, values are loaded from the **here.env** file.
@@ -31,30 +31,31 @@ If argument is not provided, values are loaded from the **here.env** file.
 Config values could be overridden by environment variables with same names.
 
 ```python
-import os
-os.environ["HERE_PORT"] = "8022"
-
-%here
+%env HERE_PORT=8023
 ```
 
 #### here.env example
 ```
-# Hostname (localhost) or address (127.0.0.1) to listen on.
-# Could be empty to listen for all addresses.
-HERE_HOST=
+# Hostname or address to listen on.
+# Defaults to 127.0.0.1 for local-only access.
+# Use 0.0.0.0 or a specific interface to accept remote connections.
+HERE_HOST=127.0.0.1
 
-# Port number to listen on
-HERE_PORT=8023
+# Port number to listen on.
+# Defaults to 8022.
+HERE_PORT=8022
 
 # Credentials
 HERE_USERNAME=admin
 HERE_PASSWORD=xxx
 
-# Path to store the generated private key
+# Path to store the generated private key.
+# Defaults to ./key.rsa.
 HERE_KEY_PATH=./key.rsa
 
 # Path to the root directory for the SFTP session (%there upload/download commands)
-HERE_CHROOT=.
+# Defaults to the here-server process current directory.
+HERE_SFTP_ROOT=.
 ```
 
 
@@ -65,10 +66,10 @@ export HERE_PORT=8023
 python -m herethere.here
 ```
 
-Same as the *%here* command, configuration is loaded from the **here.env** file and environment.
+This is the same as the *%here* command: configuration is loaded from here.env and the environment.
 
 
-## Run from the code
+## Using it in code
 
 ```python
 from herethere.here import ServerConfig, start_server

@@ -38,7 +38,7 @@ class ContextObject:
     raw_remainder: str | None = None
 
     def runcode(self):
-        """Execute python code on the remote side."""
+        """Execute Python code on the remote side."""
         if not self.code:
             raise EmptyCode("Code to execute is not specified.")
         # prepend with "\n" so error message line matches cell line number
@@ -112,7 +112,7 @@ def there_group(ctx, background, limit, delay):
     if delay:
         time.sleep(delay)
     if ctx.invoked_subcommand is None:
-        # Execute python code if no command specified
+        # Execute Python code if no command specified
         return ctx.obj.runcode()
     return None
 

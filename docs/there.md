@@ -25,27 +25,25 @@ Commands are provided by the *herethere.magic* extension.
 ### %connect-there
 **Connect to remote interpreter via SSH.**
 
-Command takes single optional argument: location of connection config.<br>
+Command takes a single optional argument: location of connection config.<br>
 If argument is not provided, values are loaded from the **there.env** file.
 
-Config values could be overridden by environment variables with same names.
+Config values can be overridden by environment variables with same names.
 
 ```python
-import os
-os.environ["THERE_PORT"] = "8022"
-```
-
-```python
+%env THERE_PORT=8022
 %connect-there there.env
 ```
 
 #### there.env example
 ```
-# Hostname or address to connect to
+# Hostname or address to connect to.
+# Defaults to 127.0.0.1.
 THERE_HOST=127.0.0.1
 
-# Port number to connect to
-THERE_PORT=8023
+# Port number to connect to.
+# Defaults to 8022.
+THERE_PORT=8022
 
 # Credentials
 THERE_USERNAME=debug
@@ -59,18 +57,18 @@ THERE_PASSWORD=xxx
 %there --help
 ```
 
-Default action for *%there*, if command is not specified - execute python code.
+By default, *%there* executes Python code when no command is specified.
 
 
-#### there
-**Execute python code on the remote side.**<br>
+#### %%there
+**Execute Python code on the remote side.**<br>
 
 ```python
 %%there 
 import this
 ```
 
-#### shell
+#### %%there shell
 
 ```python
 %there shell --help
@@ -84,7 +82,7 @@ do
 done
 ```
 
-Priodically run the `top` command in the background and show last two lines of output:
+Periodically run the `top` command in the background and show the last two lines of output:
 
 ```python
 %%there -bl 2 shell
@@ -94,7 +92,7 @@ while :; do
 done
 ```
 
-#### get
+#### %there get
 
 Evaluate one Python expression on the remote side and return the result as a
 local Python value.
@@ -109,84 +107,128 @@ value = %there get x + 1
 value
 ```
 
-The expression is evaluated in the same remote namespace used by `%there` and
-`%%there`.
-
 Returned values are serialized with pickle. Nested values are supported when
 every contained object is pickle-serializable, and any custom classes must be
 available in the local environment. `%there get` is intended for small to
-medium inspectable values; for large data, return a summary or use `download`
-instead. To avoid accidental large transfers, values whose pickle payload is
-larger than 32 MiB are rejected by default.
+medium inspectable values such as counters, summaries, or configuration.
+To avoid accidental large transfers, values whose pickle payload is larger
+than 32 MiB are rejected by default.
 
-#### upload
+#### %there upload
 
 ```python
 %there upload --help
 ```
 
-The SFTP root directory is set by the `HERE_CHROOT` value of the here-server
-config.
+The SFTP root directory is set by the `HERE_SFTP_ROOT` value of the here-server
+config. If unset, it defaults to the here-server process current directory.
+This is not a process chroot or sandbox.
 
 ```python
-!touch some.ico script.py
-!mkdir -p dir1/dir2
+%there upload sample-note.txt sample-script.py sample-dir .
 ```
 
+When uploading one file or directory, the remote destination defaults to the
+current SFTP directory:
+
 ```python
-%there upload some.ico script.py dir1 /
+%there upload sample-note.txt
 ```
 
 ```python
 %%there shell
-ls some.ico script.py
+find . -maxdepth 2 -type f | sort
 ```
 
-#### download
+#### %there download
 
 ```python
 %there download --help
 ```
 
-Files and directories are downloaded from the same SFTP root used by
-`%there upload`.
+Files and directories are downloaded from the same SFTP root used by `%there upload`.
 
 ```python
-%there download some.ico ./some.ico
+%there download sample-note.txt ./downloaded-note.txt
 ```
 
 ```python
-%there download dir1 ./downloaded-dir1
+from pathlib import Path
+Path("downloaded-note.txt").read_text()
 ```
 
-For large data, write a file remotely and download it:
+When downloading one file or directory, the local destination defaults to the
+current local directory. Directories use the same command:
+
+```python
+%there download sample-dir ./downloaded-sample-dir
+```
+
+```python
+Path("downloaded-sample-dir/nested.txt").read_text()
+```
+
+For generated outputs that are too large for `%there get`, save a file under
+the SFTP root and fetch it:
 
 ```python
 %%there
-data.to_csv("test-data.csv")
+import csv
+
+rows = [
+    {"sensor": "greenhouse-1", "metric": "temperature_c", "value": 21.8},
+    {"sensor": "greenhouse-1", "metric": "humidity_pct", "value": 58.2},
+    {"sensor": "greenhouse-2", "metric": "temperature_c", "value": 20.9},
+    {"sensor": "greenhouse-2", "metric": "humidity_pct", "value": 61.4},
+]
+
+with open("sample-data.csv", "w", newline="") as file:
+    writer = csv.DictWriter(file, fieldnames=["sensor", "metric", "value"])
+    writer.writeheader()
+    writer.writerows(rows)
 ```
 
 ```python
-%there download test-data.csv ./test-data.csv
+%there download sample-data.csv ./sample-data.csv
 ```
 
-#### log
+```python
+Path("sample-data.csv").read_text()
+```
+
+#### %there log
 
 ```python
 %there log --help
 ```
 
 ```{note}
-Since the command blocks and never ends, it is useful to run with --backgroud (-b) option
+Since the command blocks and never ends, it is useful to run with the --background (-b) option
 ```
 
 ```python
 %there -b -l 10 log
 ```
 
-#### Custom subcomands
+Emit a log record on the remote side. The record is streamed into the
+background output above in an interactive notebook.
 
-New subcommands could be registered with the [@there_code_shortcut](api.html#herethere.there.commands.there_code_shortcut) decorator and [click](https://click.palletsprojects.com/en/master/options/) options:
+```python
+%%there -d 0.2
+import logging
+
+logging.warning("hello from remote logging")
+```
+
+Example output:
+
+```text
+[WARNING] 2026-05-25 14:00:00 SSHServerHereThread_0 root: hello from remote logging
+```
+
+#### Custom subcommands
+
+New subcommands can be registered with the {py:func}`@there_code_shortcut <herethere.there.commands.there_code_shortcut>` decorator and [click](https://click.palletsprojects.com/en/master/options/) options:
 
 
 ```python
@@ -202,7 +244,7 @@ def mycommand(code: str, number_to_print):
 ```
 
 
-## Using in the code
+## Using it in code
 
 ```python
 from herethere.everywhere import ConnectionConfig

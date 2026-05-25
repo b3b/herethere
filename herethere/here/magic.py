@@ -29,7 +29,7 @@ class MagicHere(MagicEverywhere):
         help="Location of server config.",
     )
     def start_server(self, line: str):
-        """Start a remote connections listener."""
+        """Start a listener for remote connections."""
         args = parse_argstring(self.start_server, line)
         config = ServerConfig.load(path=args.config, prefix="here")
         self.server = run_sync(start_server(config))
