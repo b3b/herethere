@@ -69,8 +69,10 @@ def test_code_executed(call_there_group):
     (
         ["", "print(1)", [], "print(1)"],
         ["shell", "echo 1", ["shell"], "echo 1"],
+        ["upload tests/hello.txt", "", ["upload", "tests/hello.txt"], ""],
         ["upload tests/hello.txt dst", "", ["upload", "tests/hello.txt", "dst"], ""],
         ["upload src1 src2 dst", "", ["upload", "src1", "src2", "dst"], ""],
+        ["download src", "", ["download", "src"], ""],
         ["download src dst", "", ["download", "src", "dst"], ""],
         ["download src1 src2 dst", "", ["download", "src1", "src2", "dst"], ""],
         [

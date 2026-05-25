@@ -174,10 +174,23 @@ def raw_remainder_after_command(ctx: click.Context) -> str:
 
 @there_group.command()
 @click.pass_context
-@click.argument("localpaths", type=click.Path(exists=True), nargs=-1, required=True)
-@click.argument("remotepath", nargs=1)
-def upload(ctx, localpaths, remotepath):
-    """Upload files and directories to `remotepath`."""
+@click.argument("paths", nargs=-1, required=True, metavar="LOCAL_PATH... [REMOTE_PATH]")
+def upload(ctx, paths):
+    """Upload files and directories.
+
+    With one path, upload to the current remote SFTP directory. With multiple
+    paths, the last path is the remote destination.
+    """
+    if len(paths) == 1:
+        localpaths = paths
+        remotepath = "."
+    else:
+        localpaths = paths[:-1]
+        remotepath = paths[-1]
+
+    path_type = click.Path(exists=True)
+    localpaths = tuple(path_type.convert(path, None, ctx) for path in localpaths)
+
     if len(localpaths) == 1:
         localpaths = localpaths[0]
     return run_sync(ctx.obj.client.upload(localpaths, remotepath))
@@ -185,10 +198,20 @@ def upload(ctx, localpaths, remotepath):
 
 @there_group.command()
 @click.pass_context
-@click.argument("remotepaths", nargs=-1, required=True)
-@click.argument("localpath", type=click.Path(), nargs=1)
-def download(ctx, remotepaths, localpath):
-    """Download files and directories to `localpath`."""
+@click.argument("paths", nargs=-1, required=True, metavar="REMOTE_PATH... [LOCAL_PATH]")
+def download(ctx, paths):
+    """Download files and directories.
+
+    With one path, download to the current local directory. With multiple
+    paths, the last path is the local destination.
+    """
+    if len(paths) == 1:
+        remotepaths = paths
+        localpath = "."
+    else:
+        remotepaths = paths[:-1]
+        localpath = paths[-1]
+
     if len(remotepaths) == 1:
         remotepaths = remotepaths[0]
     return run_sync(ctx.obj.client.download(remotepaths, localpath))

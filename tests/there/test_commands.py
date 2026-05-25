@@ -8,6 +8,7 @@ from pathlib import Path
 
 import click
 import pytest
+from click.testing import CliRunner
 
 import herethere.there.commands.log  # noqa: F401
 from herethere.everywhere import runcode
@@ -369,6 +370,15 @@ def test_file_uploaded(tmpdir, call_there_group):
         assert f.read() == "hello\n"
 
 
+def test_file_uploaded_to_default_directory(tmpdir, call_there_group):
+    expected_path = Path(tmpdir) / "hello.txt"
+    assert not os.path.exists(expected_path)
+
+    call_there_group(["upload", "tests/hello.txt"], "")
+
+    assert expected_path.read_text() == "hello\n"
+
+
 def test_multiple_files_uploaded_to_directory(tmpdir, call_there_group):
     assert not os.path.exists(Path(tmpdir) / "hello.txt")
     assert not os.path.exists(Path(tmpdir) / "hello/there.txt")
@@ -392,6 +402,45 @@ def test_file_downloaded(tmpdir, call_there_group):
     call_there_group(["download", "hello_remote.txt", str(local_path)], "")
 
     assert local_path.read_text() == "hello remote\n"
+
+
+def test_file_downloaded_to_default_directory(tmpdir, monkeypatch, call_there_group):
+    remote_path = Path(tmpdir) / "hello_remote.txt"
+    local_dir = Path(tmpdir) / "local"
+    remote_path.write_text("hello remote\n")
+    local_dir.mkdir()
+    monkeypatch.chdir(local_dir)
+
+    call_there_group(["download", "hello_remote.txt"], "")
+
+    assert (local_dir / "hello_remote.txt").read_text() == "hello remote\n"
+
+
+@pytest.mark.parametrize(
+    "command, expected_usage, expected_help",
+    (
+        (
+            "upload",
+            "Usage: there upload [OPTIONS] LOCAL_PATH... [REMOTE_PATH]",
+            "With one path, upload to the current remote SFTP directory.",
+        ),
+        (
+            "download",
+            "Usage: there download [OPTIONS] REMOTE_PATH... [LOCAL_PATH]",
+            "With one path, download to the current local directory.",
+        ),
+    ),
+)
+def test_transfer_command_help(tmpdir, command, expected_usage, expected_help):
+    result = CliRunner().invoke(
+        there_group,
+        [command, "--help"],
+        obj=ContextObject(client=GetClientStub(), code=""),
+    )
+
+    assert result.exit_code == 0
+    assert expected_usage in result.output
+    assert expected_help in result.output
 
 
 def test_multiple_files_downloaded_to_directory(tmpdir, call_there_group):
