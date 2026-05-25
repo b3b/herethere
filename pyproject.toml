@@ -92,6 +92,8 @@ disable = [
   "raw-checker-failed",
   "redefined-outer-name",
   "suppressed-message",
+  "too-many-arguments",
+  "too-many-positional-arguments",
   "too-few-public-methods",
   "unused-argument",
   "unused-wildcard-import",
@@ -117,6 +119,7 @@ select = [
     "PL",   # pylint-style checks supported by Ruff
 ]
 ignore = [
+    "PLR0913", # configuration objects and click-style APIs often mirror external parameters
     "TRY003", # allow direct exception messages in this small library
 ]
 
