@@ -25,6 +25,10 @@ from herethere.there.commands import (
 from herethere.there.output import LimitedOutput
 
 
+def _is_help_request(args):
+    return "--help" in args
+
+
 @magics_class
 class MagicThere(MagicEverywhere):
     """Provides the %there magic."""
@@ -81,6 +85,8 @@ class MagicThere(MagicEverywhere):
 
         self._observe_background_future(future)
         if isinstance(future, Future):
+            return None
+        if future == 0 and _is_help_request(args):
             return None
         return future
 

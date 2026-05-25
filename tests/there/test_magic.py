@@ -121,6 +121,15 @@ def test_there_magic_returns_foreground_result(mocker):
     assert magic.there("get x + 1") == 11
 
 
+@pytest.mark.parametrize("line", ("--help", "shell --help"))
+def test_there_magic_does_not_display_help_exit_code(line, capsys):
+    magic = MagicThere(shell=None)
+
+    assert magic.there(line) is None
+    captured = capsys.readouterr()
+    assert "Usage: there" in captured.out
+
+
 def test_there_get_magic_calls_get_command():
     magic = MagicThere(shell=None)
     magic.client = GetClientStub()
