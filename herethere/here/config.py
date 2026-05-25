@@ -13,16 +13,17 @@ logger = logging.getLogger("herethere")
 class ServerConfig(ConnectionConfig):
     """SSH server configuration."""
 
-    key_path: str
+    key_path: str = "./key.rsa"
     sftp_root: str = "."
 
     def __init__(
         self,
-        host: str,
-        port: int,
         username: str,
         password: str,
-        key_path: str,
+        *,
+        host: str = "127.0.0.1",
+        port: int = 8022,
+        key_path: str = "./key.rsa",
         sftp_root: str = ".",
         chroot: str | None = None,
     ):
@@ -70,11 +71,13 @@ class ServerConfig(ConnectionConfig):
 
         try:
             return cls(
-                host=env[prefixed_key(prefix=prefix, key="host")],
-                port=env[prefixed_key(prefix=prefix, key="port")],
+                host=env.get(prefixed_key(prefix=prefix, key="host"), "127.0.0.1"),
+                port=env.get(prefixed_key(prefix=prefix, key="port"), 8022),
                 username=env[prefixed_key(prefix=prefix, key="username")],
                 password=env[prefixed_key(prefix=prefix, key="password")],
-                key_path=env[prefixed_key(prefix=prefix, key="key_path")],
+                key_path=env.get(
+                    prefixed_key(prefix=prefix, key="key_path"), "./key.rsa"
+                ),
                 sftp_root=sftp_root,
             )
         except KeyError as exc:

@@ -59,10 +59,13 @@ class ConnectionConfig:
         """Load config from dictionary."""
         try:
             return cls(
-                *(
-                    env[prefixed_key(prefix=prefix, key=field.name)]
+                **{
+                    field.name: env[prefixed_key(prefix=prefix, key=field.name)]
                     for field in fields(cls)
-                )
+                    if field.name not in ("host", "port")
+                },
+                host=env.get(prefixed_key(prefix=prefix, key="host"), "127.0.0.1"),
+                port=env.get(prefixed_key(prefix=prefix, key="port"), 8022),
             )
         except KeyError as exc:
             raise ConnectionConfigError(

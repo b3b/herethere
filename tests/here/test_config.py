@@ -61,10 +61,49 @@ def test_server_config_prefers_sftp_root_over_deprecated_chroot(caplog):
     )
 
 
-def test_server_config_reports_missing_required_key():
+def test_server_config_key_path_defaults_to_local_key_file():
     env = {key: value for key, value in BASE_ENV.items() if key != "HERE_KEY_PATH"}
 
-    with pytest.raises(ConnectionConfigError, match="HERE_KEY_PATH"):
+    config = ServerConfig.load_from_dict(env=env, prefix="here")
+
+    assert config.key_path == "./key.rsa"
+
+
+def test_server_config_constructor_key_path_defaults_to_local_key_file():
+    config = ServerConfig(username="here", password="there")
+
+    assert config.key_path == "./key.rsa"
+
+
+def test_server_config_constructor_host_and_port_default_to_localhost():
+    config = ServerConfig(username="here", password="there")
+
+    assert config.host == "127.0.0.1"
+    assert config.port == 8022
+
+
+def test_server_config_rejects_positional_arguments():
+    with pytest.raises(TypeError):
+        ServerConfig("localhost", "9022", "here", "there")
+
+
+def test_server_config_host_and_port_default_to_localhost():
+    env = {
+        key: value
+        for key, value in BASE_ENV.items()
+        if key not in ("HERE_HOST", "HERE_PORT")
+    }
+
+    config = ServerConfig.load_from_dict(env=env, prefix="here")
+
+    assert config.host == "127.0.0.1"
+    assert config.port == 8022
+
+
+def test_server_config_reports_missing_required_key():
+    env = {key: value for key, value in BASE_ENV.items() if key != "HERE_USERNAME"}
+
+    with pytest.raises(ConnectionConfigError, match="HERE_USERNAME"):
         ServerConfig.load_from_dict(env=env, prefix="here")
 
 

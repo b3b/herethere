@@ -130,6 +130,19 @@ def test_connection_config_loaded(path, env, expected, tmp_environ):
     assert ConnectionConfig.load(path=path, prefix="there") == expected
 
 
+def test_connection_config_host_and_port_default_to_localhost():
+    config = ConnectionConfig.load_from_dict(
+        env={
+            "THERE_USERNAME": "here",
+            "THERE_PASSWORD": "there",
+        },
+        prefix="there",
+    )
+
+    assert config.host == "127.0.0.1"
+    assert config.port == 8022
+
+
 def test_connection_not_found(tmp_environ):
     with pytest.raises(config.ConnectionConfigError):
         ConnectionConfig.load(path="no-such-config-here", prefix="there")
