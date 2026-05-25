@@ -32,3 +32,15 @@ venv:
 clean:
 	rm -rf .pytest_cache .ruff_cache .coverage coverage.xml dist build *.egg-info
 	find . -type d -name __pycache__ -prune -exec rm -rf {} +
+
+test-server: sync
+	@tmpdir="$$(mktemp -d)"; \
+	trap 'rm -rf "$$tmpdir"' EXIT; \
+	echo "Starting here on 127.0.0.1:8022 with SFTP root and cwd $$tmpdir"; \
+	HERE_HOST=127.0.0.1 \
+	HERE_PORT=8022 \
+	HERE_USERNAME=here \
+	HERE_PASSWORD=test \
+	HERE_KEY_PATH="$$tmpdir/key.rsa" \
+	HERE_SFTP_ROOT="$$tmpdir" \
+	uv run --project "$(CURDIR)" --directory "$$tmpdir" python -m herethere.here

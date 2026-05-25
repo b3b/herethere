@@ -100,7 +100,7 @@ def connection_config(monkeypatch, unused_tcp_port):
 def server_config(tmpdir, connection_config):
     return ServerConfig(
         **connection_config.asdict,
-        chroot=tmpdir,
+        sftp_root=tmpdir,
         key_path="tests/key.rsa",
     )
 

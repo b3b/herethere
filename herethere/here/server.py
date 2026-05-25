@@ -132,7 +132,7 @@ async def handle_client(process: asyncssh.SSHServerProcess, namespace: dict):
 
 
 class SFTPServerHere(asyncssh.SFTPServer):
-    """SFTP session handler for a given `chroot` directory."""
+    """SFTP session handler for a given root directory."""
 
     def __init__(self, chan: asyncssh.SSHLineEditorChannel, chroot: str):
         os.makedirs(chroot, exist_ok=True)
@@ -324,10 +324,10 @@ async def start_server(
     connections: set[asyncssh.SSHServerConnection] = set()
 
     logger.debug(
-        "start_server host=%s port=%s chroot=%s",
+        "start_server host=%s port=%s sftp_root=%s",
         config.host,
         config.port,
-        config.chroot,
+        config.sftp_root,
     )
     server = await asyncssh.create_server(
         host=config.host,
@@ -341,7 +341,8 @@ async def start_server(
             connections=connections,
         ),
         process_factory=partial(handle_client, namespace=namespace),
-        sftp_factory=config.chroot and partial(SFTPServerHere, chroot=config.chroot),
+        sftp_factory=config.sftp_root
+        and partial(SFTPServerHere, chroot=config.sftp_root),
         reuse_address=True,
     )
     return RunningServer(
