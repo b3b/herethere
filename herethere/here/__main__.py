@@ -10,15 +10,16 @@ from .server import start_server
 
 
 def configure_logging():
-    """Configure debug logging for the command-line server."""
+    """Configure logging for the command-line server."""
 
-    for logger in [
-        logging.getLogger(name) for name in logging.Logger.manager.loggerDict
-    ]:
-        logger.setLevel(logging.DEBUG)
-
-    logging.basicConfig(level=logging.DEBUG)
-    asyncssh.set_log_level("DEBUG")
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    )
+    logging.getLogger().setLevel(logging.INFO)
+    logging.getLogger("herethere").setLevel(logging.DEBUG)
+    asyncssh.set_log_level("WARNING")
 
 
 async def serve():

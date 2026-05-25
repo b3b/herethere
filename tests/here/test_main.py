@@ -1,4 +1,5 @@
 import asyncio
+import logging
 import runpy
 import sys
 
@@ -10,6 +11,32 @@ from herethere.here import __main__ as here_main
 class EventWaitReturns:
     async def wait(self):
         return None
+
+
+def test_configure_logging_uses_info_defaults_herethere_debug_and_asyncssh_warning(
+    mocker,
+):
+    root_logger = logging.getLogger()
+    herethere_logger = logging.getLogger("herethere")
+    original_root_level = root_logger.level
+    original_herethere_level = herethere_logger.level
+    basic_config = mocker.patch.object(here_main.logging, "basicConfig")
+    set_log_level = mocker.patch.object(here_main.asyncssh, "set_log_level")
+
+    try:
+        here_main.configure_logging()
+
+        basic_config.assert_called_once_with(
+            level=logging.INFO,
+            format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+            datefmt="%Y-%m-%d %H:%M:%S",
+        )
+        assert root_logger.level == logging.INFO
+        assert herethere_logger.level == logging.DEBUG
+        set_log_level.assert_called_once_with("WARNING")
+    finally:
+        root_logger.setLevel(original_root_level)
+        herethere_logger.setLevel(original_herethere_level)
 
 
 def test_main_starts_server_and_stops_on_exit(mocker, tmp_environ):
