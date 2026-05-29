@@ -61,6 +61,6 @@ finally:
 @there_code_shortcut
 def log(_) -> str:
     """Listen for log records, send logging output to stdout.
-    This command blocks execution thread forever.
+    This command blocks the execution thread until stopped.
     """
     return LOG_COMMAND_TEMPLATE

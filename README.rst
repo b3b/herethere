@@ -35,6 +35,17 @@ Python and Jupyter workflow layer on top.
 :Code repository: https://github.com/b3b/herethere
 :Documentation: https://herethere.me/library
 
+Features
+--------
+
+* Execute Python snippets inside a live target process namespace.
+* Connect from Python code or from Jupyter notebooks with ``%connect-there``
+  and ``%%there``.
+* Use SSH authentication and encrypted transport through AsyncSSH.
+* Run shell commands and upload files, depending on server configuration.
+* Generate reviewable code cells from natural-language requests with
+  ``%%there ai``.
+
 Installation
 ------------
 
@@ -87,6 +98,7 @@ state while the target process keeps running:
    print(state)
    state["speed"] = 3
    print(state)
+
 
 Trust model
 -----------

@@ -2,7 +2,7 @@ PYTHON_VERSION ?= 3.10
 UV_PYTHON := $(PYTHON_VERSION)
 export UV_PYTHON
 
-.PHONY: sync test lint format check build clean
+.PHONY: sync test lint format check build test-server clean
 
 sync:
 	uv sync --group dev --extra magic

@@ -73,6 +73,9 @@ version = { attr = "herethere.version.__version__" }
 [tool.setuptools.packages.find]
 include = ["herethere*"]
 
+[tool.setuptools.package-data]
+"herethere.there.ai" = ["prompts/*.md"]
+
 [tool.pytest.ini_options]
 asyncio_mode = "strict"
 asyncio_default_fixture_loop_scope = "function"
@@ -98,6 +101,7 @@ disable = [
   "redefined-outer-name",
   "suppressed-message",
   "too-many-arguments",
+  "too-many-instance-attributes",
   "too-many-positional-arguments",
   "too-few-public-methods",
   "unused-argument",

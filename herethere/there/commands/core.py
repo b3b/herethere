@@ -11,6 +11,7 @@ import click
 
 from herethere.everywhere.loop import run_background, run_sync
 from herethere.there.client import Client
+from herethere.there.history import RecentThereHistory
 
 
 class EmptyCode(Exception):
@@ -36,6 +37,7 @@ class ContextObject:
     background: bool = False
     raw_line: str | None = None
     raw_remainder: str | None = None
+    history: RecentThereHistory | None = None
 
     def runcode(self):
         """Execute Python code on the remote side."""
@@ -113,6 +115,8 @@ def there_group(ctx, background, limit, delay):
         time.sleep(delay)
     if ctx.invoked_subcommand is None:
         # Execute Python code if no command specified
+        if ctx.obj.history is not None and ctx.obj.code:
+            ctx.obj.history.remember(line=ctx.obj.raw_line or "", cell=ctx.obj.code)
         return ctx.obj.runcode()
     return None
 

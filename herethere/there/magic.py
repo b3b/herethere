@@ -22,6 +22,8 @@ from herethere.there.commands import (
     NeedDisplay,
     there_group,
 )
+from herethere.there.history import RecentThereHistory
+from herethere.there.local_commands import maybe_handle_local_there_command
 from herethere.there.output import LimitedOutput
 
 
@@ -37,6 +39,7 @@ class MagicThere(MagicEverywhere):
         super().__init__(shell)
         self.client = Client()
         self.background_futures: set[Future] = set()
+        self.recent_there_history = RecentThereHistory(maxlen=5)
 
     @line_magic("connect-there")
     @magic_arguments.magic_arguments()
@@ -56,7 +59,13 @@ class MagicThere(MagicEverywhere):
     @cell_magic("there")
     def there(self, line, cell=""):
         """Execute command on remote side."""
-        # pylint: disable=too-many-function-args,unexpected-keyword-arg
+        if maybe_handle_local_there_command(
+            line,
+            cell,
+            shell=self.shell,
+            history=self.recent_there_history,
+        ):
+            return None
         args = shlex.split(line)
 
         def run(obj):
@@ -69,7 +78,14 @@ class MagicThere(MagicEverywhere):
             )
 
         try:
-            future = run(ContextObject(self.client, cell, raw_line=line))
+            future = run(
+                ContextObject(
+                    self.client,
+                    cell,
+                    raw_line=line,
+                    history=self.recent_there_history,
+                )
+            )
         except NeedDisplay as exc:
             out = LimitedOutput(maxlen=exc.maxlen)
             display(out)
@@ -80,6 +96,7 @@ class MagicThere(MagicEverywhere):
                     stdout=out,
                     stderr=out,
                     raw_line=line,
+                    history=self.recent_there_history,
                 )
             )
 

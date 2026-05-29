@@ -21,6 +21,7 @@ from herethere.there.commands.core import (
     there_group,
 )
 from herethere.there.commands.log import LOG_COMMAND_TEMPLATE
+from herethere.there.history import RecentThereHistory
 
 
 class ForegroundClientStub:
@@ -72,6 +73,11 @@ class GetClientStub:
         return eval(expression)  # pylint: disable=eval-used
 
 
+class RunClientStub:
+    async def runcode(self, code, stdout=None, stderr=None):
+        return None
+
+
 class ClosingSSHStreamStub:
     """SSH stdout-like stream which starts raising once the channel is closed."""
 
@@ -94,6 +100,27 @@ def test_code_executed(call_there_group):
     with redirect_stdout(out):
         call_there_group([], "print('hello')")
         assert out.getvalue() == "hello\n"
+
+
+def test_python_cell_records_history():
+    history = RecentThereHistory()
+
+    there_group(
+        [],
+        "test",
+        standalone_mode=False,
+        obj=ContextObject(
+            client=RunClientStub(),
+            code="print('hello')",
+            raw_line="-b",
+            history=history,
+        ),
+    )
+
+    latest = history.latest()
+    assert latest is not None
+    assert latest.line == "-b"
+    assert latest.cell == "print('hello')"
 
 
 @pytest.mark.parametrize(

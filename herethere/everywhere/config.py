@@ -19,6 +19,15 @@ def prefixed_key(*, key: str, prefix: str) -> str:
     return f"{prefix}{key}".upper()
 
 
+def load_prefixed_env(*, prefix: str, path: str = None) -> dict[str, str]:
+    """Load prefixed dotenv config and overlay process environment variables."""
+    if not path:
+        path = find_dotenv(f"{prefix}.env", usecwd=True)
+    env = dotenv_values(dotenv_path=path)
+    env.update(environ)
+    return env
+
+
 @dataclass
 class ConnectionConfig:
     """Remote connection configuration."""
@@ -48,10 +57,7 @@ class ConnectionConfig:
             to search for: {prefix}.env
         :param path: explicit configuration file location
         """
-        if not path:
-            path = find_dotenv(f"{prefix}.env", usecwd=True)
-        env = dotenv_values(dotenv_path=path)
-        env.update(environ)
+        env = load_prefixed_env(prefix=prefix, path=path)
         return cls.load_from_dict(env=env, prefix=prefix)
 
     @classmethod

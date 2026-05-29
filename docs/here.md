@@ -25,10 +25,10 @@ Commands are provided by the *herethere.magic* extension.
 ### %here command
 **Start a listener for remote connections.**
 
-Command takes single optional argument: location of server config.<br>
+Command takes a single optional argument: location of server config.<br>
 If argument is not provided, values are loaded from the **here.env** file.
 
-Config values could be overridden by environment variables with same names.
+Config values can be overridden by environment variables with same names.
 
 ```python
 %env HERE_PORT=8023

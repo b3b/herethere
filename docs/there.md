@@ -203,7 +203,7 @@ Path("sample-data.csv").read_text()
 ```
 
 ```{note}
-Since the command blocks and never ends, it is useful to run with the --background (-b) option
+Since the command blocks and never ends, it is useful to run with the `--background` (`-b`) option
 ```
 
 ```python
@@ -238,7 +238,7 @@ import click
 @there_code_shortcut
 @click.option("-n", "--number_to_print", type=int)
 def mycommand(code: str, number_to_print):
-        return f"print({number_to_print})"
+    return f"print({number_to_print})"
 
 %there mycommand -n 123
 ```

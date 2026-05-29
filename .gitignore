@@ -26,3 +26,5 @@ coverage.xml
 *.swp
 *.sublime-workspace
 .ropeproject
+
+*.env

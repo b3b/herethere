@@ -16,6 +16,11 @@ class GetClientStub:
         return eval(expression, namespace)  # pylint: disable=eval-used
 
 
+class RunClientStub:
+    async def runcode(self, code, stdout=None, stderr=None):
+        return None
+
+
 @pytest_asyncio.fixture
 async def connected_there(server_instance, connection_config):
     magic = MagicThere(shell=None)
@@ -91,6 +96,55 @@ def test_there_command_called(
     command.assert_called_once()
     assert command.call_args[0][0] == expected_args
     assert command.call_args[1]["obj"].code == expected_code
+
+
+def test_python_cell_is_recorded_as_latest_executable_cell(mocker):
+    magic = MagicThere(shell=None)
+    magic.client = RunClientStub()
+
+    magic.there("", "print('hello')")
+
+    latest = magic.recent_there_history.latest()
+    assert latest is not None
+    assert latest.line == ""
+    assert latest.cell == "print('hello')"
+    assert latest.timestamp
+
+
+@pytest.mark.parametrize(
+    "line, cell",
+    (
+        ("", ""),
+        ("shell", "echo hello"),
+        ("upload tests/hello.txt", ""),
+        ("get x + 1", ""),
+        ("--help", ""),
+    ),
+)
+def test_non_python_cells_are_not_recorded(mocker, line, cell):
+    mocker.patch("herethere.there.magic.there_group", return_value=None)
+    magic = MagicThere(shell=None)
+
+    magic.there(line, cell)
+
+    assert magic.recent_there_history.latest() is None
+
+
+def test_local_ai_command_does_not_replace_latest_executable_cell(mocker):
+    local_handler = mocker.patch(
+        "herethere.there.magic.maybe_handle_local_there_command",
+        side_effect=(False, True),
+    )
+    magic = MagicThere(shell=None)
+    magic.client = RunClientStub()
+
+    magic.there("", "print('first')")
+    magic.there("ai --fix", "fix it")
+
+    assert local_handler.call_count == 2
+    latest = magic.recent_there_history.latest()
+    assert latest is not None
+    assert latest.cell == "print('first')"
 
 
 def test_error_line_number(capfd, call_there_group):

@@ -1,6 +1,16 @@
 Changelog
 =========
 
+0.2.2
+-----
+
+This release adds AI-assisted local generation of %%there notebook cells.
+
+* Added ``%%there ai`` to use a configured language model to generate a new ``%%there`` Python cell from a natural language request
+* Inserted generated cells into the notebook for inspection or editing before they are run on the connected target
+* Added ``%%there ai --fix`` to generate a corrected replacement after a ``%%there`` Python cell fails or needs adjustment
+* Added configurable AI prompts so notebooks and integrations can include project-, runtime-, or framework-specific context
+
 0.2.1
 -----
 
