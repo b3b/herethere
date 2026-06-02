@@ -133,15 +133,6 @@ def test_ai_line_parses_prompt_options():
     options = parse_ai_line("--prompts kivy,pyjnius,midi")
 
     assert options.prompts == ("kivy", "pyjnius", "midi")
-    assert options.include_default is True
-    assert options.fix is False
-
-
-def test_ai_line_parses_no_default():
-    options = parse_ai_line("--no-default --prompts custom")
-
-    assert options.prompts == ("custom",)
-    assert options.include_default is False
     assert options.fix is False
 
 
@@ -149,13 +140,7 @@ def test_ai_line_parses_fix():
     options = parse_ai_line("--fix --prompts custom")
 
     assert options.prompts == ("custom",)
-    assert options.include_default is True
     assert options.fix is True
-
-
-def test_ai_line_rejects_no_default_without_prompts():
-    with pytest.raises(click.UsageError, match="--no-default requires --prompts"):
-        parse_ai_line("--no-default")
 
 
 def test_ai_line_rejects_malformed_quoting():
@@ -183,7 +168,7 @@ def test_prompt_options_are_passed_to_message_builder(mocker, capfd, tmp_environ
 
     handle_ai(
         local_command(
-            line="--no-default --prompts kivy,midi",
+            line="--prompts kivy,midi",
             cell="debug remote",
             shell=mocker.Mock(),
         )
@@ -192,7 +177,6 @@ def test_prompt_options_are_passed_to_message_builder(mocker, capfd, tmp_environ
     build_messages.assert_called_once_with(
         "debug remote",
         ("kivy", "midi"),
-        include_default=False,
     )
     captured = capfd.readouterr()
     assert "Generating %%there cell with AI" in captured.out
@@ -263,7 +247,7 @@ def test_fix_passes_previous_cell_to_message_builder(mocker, capfd, tmp_environ)
     assert "print(app_state.value)" in user_request
     assert "Use app.state instead." in user_request
     assert build_messages.call_args.args[1] == ("kivy", "fix")
-    assert build_messages.call_args.kwargs == {"include_default": True}
+    assert build_messages.call_args.kwargs == {}
     generated_cell = shell.set_next_input.call_args.args[0]
     assert "# AI mode: fix" in generated_cell
     assert "# AI mode: fix\n\n" not in generated_cell
@@ -293,7 +277,6 @@ def test_config_prompt_options_are_passed_to_message_builder(
     build_messages.assert_called_once_with(
         "debug remote",
         ("kivy", "midi"),
-        include_default=True,
     )
     captured = capfd.readouterr()
     assert "Generated a %%there cell in " in captured.out
@@ -324,12 +307,11 @@ def test_session_prompt_options_are_used_before_config_prompt_options(
 
     build_messages.assert_called_once_with(
         "debug remote",
-        ("default", "session"),
-        include_default=False,
+        ("session",),
     )
 
 
-def test_explicit_prompt_options_are_used_before_session_prompt_options(
+def test_explicit_prompt_options_are_appended_to_session_prompt_options(
     mocker,
     tmp_environ,
 ):
@@ -349,7 +331,7 @@ def test_explicit_prompt_options_are_used_before_session_prompt_options(
     try:
         handle_ai(
             local_command(
-                line="--no-default --prompts explicit",
+                line="--prompts explicit",
                 cell="debug remote",
                 shell=mocker.Mock(),
             )
@@ -359,6 +341,53 @@ def test_explicit_prompt_options_are_used_before_session_prompt_options(
 
     build_messages.assert_called_once_with(
         "debug remote",
-        ("explicit",),
-        include_default=False,
+        ("session", "explicit"),
+    )
+
+
+def test_explicit_prompt_options_keep_pythonhere_runtime_prompt_stack(
+    mocker,
+    tmp_environ,
+):
+    prompts.reset_ai_prompt_store()
+    prompts.set_ai_prompts(
+        "default",
+        "kivy-runtime",
+        "kivy-kv",
+        "android-runtime",
+        "jnius",
+        "android-permissions",
+        "android-packages",
+        "android-media",
+        "plyer",
+    )
+    tmp_environ["THERE_AI_MODEL"] = "test-model"
+    build_messages = mocker.patch(
+        "herethere.there.ai.command.build_messages",
+        return_value=[{"role": "user", "content": "hi"}],
+    )
+    mocker.patch(
+        "herethere.there.ai.command.call_openai_compatible",
+        return_value="print('remote')",
+    )
+
+    try:
+        handle_ai(local_command(line="--prompts midi", cell="debug remote"))
+    finally:
+        prompts.reset_ai_prompt_store()
+
+    build_messages.assert_called_once_with(
+        "debug remote",
+        (
+            "default",
+            "kivy-runtime",
+            "kivy-kv",
+            "android-runtime",
+            "jnius",
+            "android-permissions",
+            "android-packages",
+            "android-media",
+            "plyer",
+            "midi",
+        ),
     )

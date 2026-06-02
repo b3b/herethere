@@ -104,12 +104,12 @@ def get_ai_prompt(name: str) -> str:
         raise AIPromptError(f"Unknown %%there ai prompt: {normalized!r}") from exc
 
 
-def set_ai_prompts(*names: str, include_default: bool = True) -> None:
+def set_ai_prompts(*names: str) -> None:
     """Set the session prompt stack used by %%there ai."""
     if len(names) == 1 and "," in names[0]:
         names = _split_prompt_names(names[0])
 
-    prompt_names = build_ai_prompt_names(names, include_default=include_default)
+    prompt_names = build_ai_prompt_names(names)
     _ai_prompt_store.active_prompts = prompt_names
 
 
@@ -119,15 +119,10 @@ def clear_ai_prompts() -> None:
 
 
 def build_ai_prompt_names(
-    prompt_names: Iterable[str] | None = None,
-    *,
-    include_default: bool = True,
+    prompt_names: Iterable[str],
 ) -> tuple[str, ...]:
     """Build an ordered, deduplicated prompt stack."""
-    names = list(prompt_names or ())
-    if include_default:
-        names.insert(0, DEFAULT_AI_PROMPT)
-    deduped = _dedupe_prompt_names(names)
+    deduped = _dedupe_prompt_names(prompt_names)
     if not deduped:
         raise ValueError("AI prompt stack cannot be empty")
     return deduped
@@ -135,45 +130,47 @@ def build_ai_prompt_names(
 
 def build_ai_template(
     prompt_names: Iterable[str] | None = None,
-    *,
-    include_default: bool = True,
 ) -> str:
     """Compose the named prompt sections into one system prompt."""
-    names = build_ai_prompt_names(prompt_names, include_default=include_default)
+    names = (
+        (DEFAULT_AI_PROMPT,)
+        if prompt_names is None
+        else build_ai_prompt_names(prompt_names)
+    )
     return "\n\n".join(get_ai_prompt(name) for name in names)
 
 
 def resolve_ai_prompt_options(
     prompt_names: Iterable[str] | None = None,
     *,
-    include_default: bool = True,
     config_prompt_names: Iterable[str] | None = None,
-) -> tuple[tuple[str, ...] | None, bool]:
-    """Resolve command, session, and config prompt options in precedence order."""
-    if prompt_names is not None:
-        return _dedupe_prompt_names(prompt_names), include_default
-
+) -> tuple[str, ...]:
+    """Resolve command, session, and config prompt names into one stack."""
     session_prompts = _ai_prompt_store.active_prompts
+
     if session_prompts is not None:
-        return session_prompts, False
+        base_prompts = session_prompts
+    elif config_prompt_names is not None:
+        base_prompts = build_ai_prompt_names(config_prompt_names)
+    elif prompt_names is None:
+        return (DEFAULT_AI_PROMPT,)
+    else:
+        base_prompts = ()
 
-    if config_prompt_names is not None:
-        return _dedupe_prompt_names(config_prompt_names), True
-
-    return None, True
+    if prompt_names is not None:
+        return build_ai_prompt_names((*base_prompts, *prompt_names))
+    return base_prompts
 
 
 def get_ai_template(
     prompt_names: Iterable[str] | None = None,
-    *,
-    include_default: bool = True,
 ) -> str:
     if prompt_names is not None:
-        return build_ai_template(prompt_names, include_default=include_default)
+        return build_ai_template(prompt_names)
 
     session_prompts = _ai_prompt_store.active_prompts
     if session_prompts is not None:
-        return build_ai_template(session_prompts, include_default=False)
+        return build_ai_template(session_prompts)
 
     return build_ai_template()
 
@@ -181,13 +178,8 @@ def get_ai_template(
 def build_messages(
     user_request: str,
     prompt_names: Iterable[str] | None = None,
-    *,
-    include_default: bool = True,
 ) -> list[dict[str, str]]:
-    template = get_ai_template(
-        prompt_names,
-        include_default=include_default,
-    )
+    template = get_ai_template(prompt_names)
     return [
         {"role": "system", "content": template},
         {"role": "user", "content": user_request.strip()},

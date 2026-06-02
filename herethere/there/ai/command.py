@@ -47,7 +47,6 @@ class AICommandOptions:
     """Parsed options for a local %%there ai command."""
 
     prompts: tuple[str, ...] | None
-    include_default: bool
     fix: bool
 
 
@@ -75,24 +74,16 @@ def _split_prompt_names(value: str) -> tuple[str, ...]:
 @click.option(
     "--prompts",
     default="",
-    help="Comma-separated prompt sections to apply after the default prompt.",
-)
-@click.option(
-    "--no-default",
-    is_flag=True,
-    help="Use only the prompts listed with --prompts.",
+    help=("Comma-separated prompt sections to append to the active prompt stack."),
 )
 @click.option(
     "--fix",
     is_flag=True,
     help="Fix the last executed %%there Python cell using the prompt as guidance.",
 )
-def ai_command(prompts: str, no_default: bool, fix: bool) -> AICommandOptions:
-    if no_default and not prompts:
-        raise click.UsageError("--no-default requires --prompts.")
+def ai_command(prompts: str, fix: bool) -> AICommandOptions:
     return AICommandOptions(
         prompts=_split_prompt_names(prompts) if prompts else None,
-        include_default=not no_default,
         fix=fix,
     )
 
@@ -174,9 +165,8 @@ def _parse_request(command: LocalThereCommand) -> AIRequest | None:
 
 def _generate_code(request: AIRequest) -> str | None:
     config = get_ai_config()
-    prompt_names, include_default = resolve_ai_prompt_options(
+    prompt_names = resolve_ai_prompt_options(
         request.options.prompts,
-        include_default=request.options.include_default,
         config_prompt_names=config.prompts,
     )
     if request.options.fix:
@@ -186,7 +176,6 @@ def _generate_code(request: AIRequest) -> str | None:
     messages = build_messages(
         request.user_request,
         prompt_names,
-        include_default=include_default,
     )
     click.echo(
         f"Generating %%there cell with AI... this can take up to {config.timeout:g}s."

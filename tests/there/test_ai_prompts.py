@@ -55,7 +55,7 @@ def test_registered_prompt_can_override_default(tmp_environ):
 def test_registered_prompt_can_override_fix(tmp_environ):
     prompts.register_ai_prompt("fix", "custom fix")
 
-    assert prompts.get_ai_template(["fix"], include_default=False) == "custom fix"
+    assert prompts.get_ai_template(["fix"]) == "custom fix"
 
 
 def test_empty_registered_prompt_raises():
@@ -68,21 +68,19 @@ def test_empty_prompt_name_raises():
         prompts.register_ai_prompt(" ", "custom rules")
 
 
-def test_registered_prompt_sections_are_composed_after_default(tmp_environ):
+def test_registered_prompt_sections_are_composed_in_order(tmp_environ):
     prompts.register_ai_prompt("kivy", "kivy rules")
     prompts.register_ai_prompt("midi", "midi rules")
 
     template = prompts.get_ai_template(["kivy", "midi"])
 
-    assert "live, already-running Python application process" in template
-    assert template.index("live, already-running") < template.index("kivy rules")
     assert template.index("kivy rules") < template.index("midi rules")
 
 
-def test_no_default_uses_only_requested_prompts(tmp_environ):
+def test_get_ai_template_uses_exact_requested_prompts(tmp_environ):
     prompts.register_ai_prompt("custom", "custom rules")
 
-    assert prompts.get_ai_template(["custom"], include_default=False) == "custom rules"
+    assert prompts.get_ai_template(["custom"]) == "custom rules"
 
 
 def test_prompt_names_are_deduped_in_order(tmp_environ):
@@ -118,14 +116,14 @@ def test_session_prompt_stack_splits_comma_separated_names(tmp_environ):
 
 def test_session_prompt_stack_can_replace_default(tmp_environ):
     prompts.register_ai_prompt("custom", "custom rules")
-    prompts.set_ai_prompts("custom", include_default=False)
+    prompts.set_ai_prompts("custom")
 
     assert prompts.get_ai_template() == "custom rules"
 
 
 def test_clear_ai_prompts_restores_default_template(tmp_environ):
     prompts.register_ai_prompt("custom", "custom rules")
-    prompts.set_ai_prompts("custom", include_default=False)
+    prompts.set_ai_prompts("custom")
 
     prompts.clear_ai_prompts()
 
@@ -136,17 +134,47 @@ def test_clear_ai_prompts_restores_default_template(tmp_environ):
 
 def test_empty_prompt_stack_raises():
     with pytest.raises(ValueError, match="cannot be empty"):
-        prompts.build_ai_prompt_names([], include_default=False)
+        prompts.build_ai_prompt_names([])
 
 
-def test_prompt_option_resolver_uses_explicit_prompts_first(tmp_environ):
+def test_prompt_option_resolver_appends_explicit_prompts_to_session_prompts(
+    tmp_environ,
+):
     prompts.set_ai_prompts("session")
 
     assert prompts.resolve_ai_prompt_options(
         ["explicit"],
-        include_default=False,
         config_prompt_names=["config"],
-    ) == (("explicit",), False)
+    ) == ("session", "explicit")
+
+
+def test_prompt_option_resolver_keeps_runtime_prompts_when_explicit_prompt_is_added(
+    tmp_environ,
+):
+    prompts.set_ai_prompts(
+        "default",
+        "kivy-runtime",
+        "kivy-kv",
+        "android-runtime",
+        "jnius",
+        "android-permissions",
+        "android-packages",
+        "android-media",
+        "plyer",
+    )
+
+    assert prompts.resolve_ai_prompt_options(["midi"]) == (
+        "default",
+        "kivy-runtime",
+        "kivy-kv",
+        "android-runtime",
+        "jnius",
+        "android-permissions",
+        "android-packages",
+        "android-media",
+        "plyer",
+        "midi",
+    )
 
 
 def test_prompt_option_resolver_uses_session_before_config(tmp_environ):
@@ -154,15 +182,18 @@ def test_prompt_option_resolver_uses_session_before_config(tmp_environ):
 
     assert prompts.resolve_ai_prompt_options(
         config_prompt_names=["config"],
-    ) == (("default", "session"), False)
+    ) == ("session",)
 
 
-def test_prompt_option_resolver_extends_default_with_config_prompts(tmp_environ):
+def test_prompt_option_resolver_uses_exact_config_prompts(tmp_environ):
     assert prompts.resolve_ai_prompt_options(config_prompt_names=["config"]) == (
-        ("config",),
-        True,
+        "config",
     )
 
 
+def test_prompt_option_resolver_uses_exact_explicit_prompts(tmp_environ):
+    assert prompts.resolve_ai_prompt_options(["midi"]) == ("midi",)
+
+
 def test_prompt_option_resolver_falls_back_to_default(tmp_environ):
-    assert prompts.resolve_ai_prompt_options() == (None, True)
+    assert prompts.resolve_ai_prompt_options() == ("default",)

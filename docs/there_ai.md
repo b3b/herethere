@@ -100,8 +100,9 @@ print(f"CWD as Path: {Path.cwd()}")
 
 `%%there ai` builds one system prompt from named prompt sections.
 
-The built-in `default` section is used automatically. It tells the model to
-generate code for herethere cells, keep execution remote, and return only code.
+The built-in `default` section is used as the fallback when no prompt stack is
+configured. It tells the model to generate code for herethere cells, keep
+execution remote, and return only code.
 
 Register extra sections when the model needs project-specific context:
 
@@ -119,7 +120,7 @@ register_ai_prompt(
     """,
 )
 
-set_ai_prompts("fastapi-runtime")
+set_ai_prompts("default", "fastapi-runtime")
 ```
 
 Now normal `%%there ai` requests include both `default` and `fastapi-runtime`:
@@ -139,14 +140,19 @@ clear_ai_prompts()
 
 ## Prompt lookup order
 
-Prompt names can come from three places:
+Prompt names can come from three places. Session prompts are the base stack for
+the notebook, config prompts are the base stack for the project, and command
+prompts add one-request guidance to whichever base is active.
 
-1. `%%there ai --prompts ...` for one request.
-2. `set_ai_prompts(...)` for the current notebook session.
+1. `set_ai_prompts(...)` for the current notebook session.
+2. `%%there ai --prompts ...` for one request.
 3. `THERE_AI_PROMPTS=...` in `there_ai.env` or the environment.
 
-Command options win over notebook settings. Notebook settings win over
-`THERE_AI_PROMPTS`.
+`set_ai_prompts(...)` and `THERE_AI_PROMPTS` use exactly the prompt names listed.
+Include `default` explicitly when that base prompt should be part of the stack.
+When command prompts are provided, `--prompts` appends to the active session or
+config stack. If no session/config stack exists, `--prompts` uses only the listed
+prompts. If no prompt source exists at all, `%%there ai` falls back to `default`.
 
 Use prompt names in the command line for one request:
 
@@ -154,6 +160,8 @@ Use prompt names in the command line for one request:
 %%there ai --prompts fastapi-runtime
 list FastAPI routes with methods and paths, then summarize app.state keys
 ```
+
+That command uses only `fastapi-runtime` unless a session or config stack is active.
 
 Multiple prompt sections are comma-separated:
 
@@ -166,21 +174,8 @@ Use `THERE_AI_PROMPTS` when a notebook or project should use the same prompt
 sections by default:
 
 ```text
-THERE_AI_PROMPTS=fastapi-runtime
+THERE_AI_PROMPTS=default,fastapi-runtime
 ```
-
-## Replacing the default prompt
-
-Most requests should keep the built-in `default` prompt. Use `--no-default`
-only when your custom prompt fully explains what the model must generate.
-
-```{code-cell}
-:tags: ["remove-output"]
-%%there ai --no-default --prompts custom
-generate exactly one Python print statement
-```
-
-`--no-default` requires `--prompts`.
 
 ## Inspect prompts
 

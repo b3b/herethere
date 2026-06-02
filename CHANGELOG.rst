@@ -1,6 +1,14 @@
 Changelog
 =========
 
+0.2.3
+-----
+
+* Changed ``%%there ai`` prompt resolution so configured prompt stacks use the
+  exact prompt names provided by ``set_ai_prompts(...)`` and
+  ``THERE_AI_PROMPTS``; include ``default`` explicitly when it should be part
+  of the stack
+
 0.2.2
 -----
 
