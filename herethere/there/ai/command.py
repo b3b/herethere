@@ -96,6 +96,7 @@ def parse_ai_line(line: str) -> AICommandOptions:
         raise click.UsageError(str(exc)) from exc
     result = ai_command.main(
         args=args,
+        prog_name="%%there ai",
         standalone_mode=False,
     )
     if isinstance(result, int):

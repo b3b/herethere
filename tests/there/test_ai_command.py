@@ -62,7 +62,8 @@ def test_help_exits_without_error(capfd):
     handle_ai(local_command(line="--help", cell="debug remote"))
 
     captured = capfd.readouterr()
-    assert "Usage:" in captured.out
+    assert "Usage: %%there ai [OPTIONS]" in captured.out
+    assert "ipykernel_launcher.py" not in captured.out
     assert "--prompts TEXT" in captured.out
 
 
