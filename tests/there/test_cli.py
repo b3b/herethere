@@ -1,0 +1,546 @@
+import builtins
+import importlib
+import json
+import sys
+from pathlib import Path
+
+import asyncssh
+import click
+import pytest
+from click.testing import CliRunner
+
+from herethere.everywhere.config import ConnectionConfig, ConnectionConfigError
+from herethere.there import cli as cli_module
+from herethere.there.cli import (
+    MAX_MAX_OUTPUT,
+    BoundedTextCollector,
+    ConnectionFailure,
+    ExitCode,
+    LocalIOError,
+    PluginError,
+    RemoteOperationError,
+    cli,
+    load_connection_config,
+    remote_options,
+)
+
+
+class EntryPointStub:
+    def __init__(self, name, value=None, error=None):
+        self.name = name
+        self.value = value
+        self.error = error
+        self.loaded = False
+
+    def load(self):
+        self.loaded = True
+        if self.error:
+            raise self.error
+        return self.value
+
+
+def invoke_json(args):
+    result = CliRunner().invoke(cli, ["--json", *args])
+    return result, json.loads(result.output)
+
+
+def test_console_help_lists_builtins_without_ipython(monkeypatch):
+    original_import = builtins.__import__
+
+    def reject_ipython(name, *args, **kwargs):
+        if name.startswith(("IPython", "ipywidgets")):
+            raise AssertionError(f"unexpected optional import: {name}")
+        return original_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", reject_ipython)
+    sys.modules.pop("herethere.there.cli", None)
+    module = importlib.import_module("herethere.there.cli")
+
+    result = CliRunner().invoke(module.cli, ["--help"])
+
+    assert result.exit_code == 0
+    assert "--format [text|json]" in result.output
+    assert "there_group" not in result.output
+
+
+def test_console_script_is_registered():
+    pyproject = Path("pyproject.toml").read_text(encoding="utf-8")
+    assert '[project.scripts]\nthere = "herethere.there.cli:cli"' in pyproject
+
+
+@pytest.mark.parametrize("option", [["--json"], ["--format", "json"]])
+def test_json_unknown_command_is_one_object(option):
+    result = CliRunner().invoke(cli, [*option, "missing"])
+    payload = json.loads(result.output)
+
+    assert result.exit_code == ExitCode.USAGE
+    assert result.output.count("\n") == 1
+    assert payload["ok"] is False
+    assert payload["command"] == "missing"
+    assert payload["error"]["type"] == "UsageError"
+
+
+def test_json_and_explicit_text_conflict():
+    result = CliRunner().invoke(cli, ["--json", "--format", "text", "missing"])
+    payload = json.loads(result.output)
+
+    assert result.exit_code == ExitCode.USAGE
+    assert payload["error"]["message"] == "--json cannot be used with --format text."
+
+
+def test_json_and_explicit_json_are_allowed():
+    result = CliRunner().invoke(cli, ["--json", "--format", "json", "missing"])
+    assert result.exit_code == ExitCode.USAGE
+    assert json.loads(result.output)["error"]["type"] == "UsageError"
+
+
+def test_json_selection_precedes_invalid_format_parsing():
+    result = CliRunner().invoke(cli, ["--json", "--format", "yaml", "missing"])
+    assert result.exit_code == ExitCode.USAGE
+    assert json.loads(result.output)["error"]["type"] == "UsageError"
+
+
+def test_root_option_after_command_is_not_accepted(monkeypatch):
+    command = click.Command("external")
+    monkeypatch.setattr(
+        cli_module, "_entry_points", lambda: (EntryPointStub("external", command),)
+    )
+
+    result = CliRunner().invoke(cli, ["external", "--json"])
+    assert result.exit_code == ExitCode.USAGE
+    assert not result.output.startswith("{")
+
+
+def test_help_is_never_json_wrapped():
+    result = CliRunner().invoke(cli, ["--json", "--help"])
+    assert result.exit_code == 0
+    assert result.output.startswith("Usage:")
+
+
+def test_json_success_captures_output_and_result_fields(monkeypatch):
+    @click.command()
+    def extension():
+        click.echo("out")
+        click.echo("err", err=True)
+        return {"answer": 42, "ok": False}
+
+    monkeypatch.setattr(
+        cli_module, "_entry_points", lambda: (EntryPointStub("extension", extension),)
+    )
+    result, payload = invoke_json(["extension"])
+
+    assert result.exit_code == 0
+    assert payload == {
+        "ok": True,
+        "command": "extension",
+        "exit_code": 0,
+        "stdout": "out\n",
+        "stdout_bytes": 4,
+        "stdout_truncated": False,
+        "stderr": "err\n",
+        "stderr_bytes": 4,
+        "stderr_truncated": False,
+        "error": None,
+        "answer": 42,
+    }
+
+
+@pytest.mark.parametrize(
+    ("exception", "exit_code", "error_type"),
+    [
+        (TimeoutError("late"), ExitCode.TIMEOUT, "TimeoutError"),
+        (TimeoutError(), ExitCode.TIMEOUT, "TimeoutError"),
+        (
+            asyncssh.PermissionDenied("denied"),
+            ExitCode.CONNECTION,
+            "AuthenticationError",
+        ),
+        (
+            asyncssh.ConnectionLost("lost"),
+            ExitCode.CONNECTION,
+            "ConnectionError",
+        ),
+        (ConnectionFailure("denied"), ExitCode.CONNECTION, "ConnectionError"),
+        (RemoteOperationError("failed"), ExitCode.REMOTE, "RemoteOperationError"),
+        (LocalIOError("missing"), ExitCode.LOCAL_IO, "LocalIOError"),
+        (click.ClickException("bad"), ExitCode.REMOTE, "ClickException"),
+        (RuntimeError("bug"), ExitCode.REMOTE, "InternalError"),
+        (
+            ConnectionConfigError("not configured"),
+            ExitCode.USAGE,
+            "ConfigError",
+        ),
+    ],
+)
+def test_json_error_mapping(monkeypatch, exception, exit_code, error_type):
+    @click.command()
+    def failure():
+        raise exception
+
+    monkeypatch.setattr(
+        cli_module, "_entry_points", lambda: (EntryPointStub("failure", failure),)
+    )
+    result, payload = invoke_json(["failure"])
+
+    assert result.exit_code == exit_code
+    assert payload["error"]["type"] == error_type
+    assert payload["stdout"] == ""
+    assert payload["stderr"] == ""
+
+
+def test_bounded_collector_retains_byte_tail_and_metadata():
+    collector = BoundedTextCollector(4)
+    assert collector.encoding == "utf-8"
+    assert collector.writable()
+    assert collector.write("ab") == 2
+    collector.write_bytes(b"cdef")
+
+    assert collector.getvalue() == "cdef"
+    assert collector.metadata("stdout") == {
+        "stdout": "cdef",
+        "stdout_bytes": 6,
+        "stdout_truncated": True,
+    }
+
+
+def test_bounded_collector_discards_old_bytes_for_small_writes():
+    collector = BoundedTextCollector(4)
+    collector.write("abc")
+    collector.write("def")
+    assert collector.getvalue() == "cdef"
+
+
+def test_bounded_collector_limit_can_be_reduced():
+    collector = BoundedTextCollector(10)
+    collector.write("abcdef")
+    collector.set_limit(3)
+    assert collector.getvalue() == "def"
+    with pytest.raises(ValueError, match="range"):
+        collector.set_limit(0)
+
+
+def test_bounded_collector_decodes_truncated_utf8_with_replacement():
+    collector = BoundedTextCollector(2)
+    collector.write("x€")
+    assert collector.getvalue() == "��"
+    assert collector.byte_count == 4
+    assert collector.truncated
+
+
+@pytest.mark.parametrize("limit", [0, MAX_MAX_OUTPUT + 1])
+def test_bounded_collector_validates_limit(limit):
+    with pytest.raises(ValueError, match="range"):
+        BoundedTextCollector(limit)
+
+
+def test_bounded_collector_requires_text():
+    with pytest.raises(TypeError, match="must be str"):
+        BoundedTextCollector().write(b"bytes")
+
+
+@pytest.mark.parametrize("value", ["bad", "0", str(MAX_MAX_OUTPUT + 1)])
+def test_max_output_option_validates_range(monkeypatch, value):
+    @click.command()
+    @remote_options
+    def remote(config, timeout, max_output):
+        del config, timeout, max_output
+
+    monkeypatch.setattr(
+        cli_module, "_entry_points", lambda: (EntryPointStub("remote", remote),)
+    )
+    result, payload = invoke_json(["remote", "--max-output", value])
+    assert result.exit_code == ExitCode.USAGE
+    assert "--max-output" in payload["error"]["message"]
+
+
+def test_max_output_equals_form_bounds_captured_plugin_output(monkeypatch):
+    @click.command()
+    @remote_options
+    def noisy(config, timeout, max_output):
+        del config, timeout, max_output
+        click.echo("abcdefghij", nl=False)
+
+    monkeypatch.setattr(
+        cli_module, "_entry_points", lambda: (EntryPointStub("noisy", noisy),)
+    )
+    result, payload = invoke_json(["noisy", "--max-output=4"])
+
+    assert result.exit_code == 0
+    assert payload["stdout"] == "ghij"
+    assert payload["stdout_bytes"] == 10
+    assert payload["stdout_truncated"] is True
+
+
+def test_format_equals_form_is_parsed_by_click():
+    result = CliRunner().invoke(cli, ["--format=json", "missing"])
+    assert result.exit_code == ExitCode.USAGE
+    assert json.loads(result.output)["error"]["type"] == "UsageError"
+
+
+def test_remote_options_parse_consistently():
+    received = {}
+
+    @click.command()
+    @remote_options
+    def command(config, timeout, max_output):
+        received.update(
+            config=config,
+            timeout=timeout,
+            max_output=max_output,
+        )
+
+    result = CliRunner().invoke(
+        command,
+        ["--config", "custom.env", "--timeout", "1.5", "--max-output", "12"],
+    )
+
+    assert result.exit_code == 0
+    assert received == {
+        "config": Path("custom.env"),
+        "timeout": 1.5,
+        "max_output": 12,
+    }
+
+
+def test_explicit_config_and_environment_override(tmp_path, monkeypatch):
+    path = tmp_path / "custom.env"
+    path.write_text(
+        "THERE_HOST=file-host\n"
+        "THERE_PORT=9000\n"
+        "THERE_USERNAME=file-user\n"
+        "THERE_PASSWORD=file-password\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("THERE_HOST", "environment-host")
+
+    config = load_connection_config(path)
+
+    assert config == ConnectionConfig(
+        host="environment-host",
+        port=9000,
+        username="file-user",
+        password="file-password",
+    )
+
+
+def test_default_config_searches_parent_directories(tmp_path, monkeypatch):
+    path = tmp_path / "there.env"
+    path.write_text(
+        "THERE_USERNAME=user\nTHERE_PASSWORD=password\n",
+        encoding="utf-8",
+    )
+    child = tmp_path / "one" / "two"
+    child.mkdir(parents=True)
+    monkeypatch.chdir(child)
+    monkeypatch.delenv("THERE_USERNAME", raising=False)
+    monkeypatch.delenv("THERE_PASSWORD", raising=False)
+
+    assert load_connection_config() == ConnectionConfig(
+        host="127.0.0.1",
+        port=8022,
+        username="user",
+        password="password",
+    )
+
+
+def test_plugin_help_does_not_load_plugin(monkeypatch):
+    entry_point = EntryPointStub("external", click.Command("external"))
+    monkeypatch.setattr(cli_module, "_entry_points", lambda: (entry_point,))
+
+    result = CliRunner().invoke(cli, ["--help"])
+
+    assert result.exit_code == 0
+    assert "external" in result.output
+    assert "[plugin]" in result.output
+    assert entry_point.loaded is False
+
+
+def test_help_omits_hidden_commands_and_plugin_collision(monkeypatch):
+    group = cli_module.PluginGroup("root")
+    group.add_command(click.Command("hidden", hidden=True))
+    group.add_command(click.Command("visible"))
+    entry_point = EntryPointStub("visible", click.Command("replacement"))
+    monkeypatch.setattr(cli_module, "_entry_points", lambda: (entry_point,))
+
+    result = CliRunner().invoke(group, ["--help"])
+
+    assert result.exit_code == 0
+    assert "hidden" not in result.output
+    assert result.output.count("visible") == 1
+    assert entry_point.loaded is False
+
+
+def test_empty_group_help_has_no_commands_section(monkeypatch):
+    group = cli_module.PluginGroup("root")
+    monkeypatch.setattr(cli_module, "_entry_points", lambda: ())
+
+    result = CliRunner().invoke(group, ["--help"])
+
+    assert result.exit_code == 0
+    assert "Commands:" not in result.output
+
+
+def test_plugin_is_loaded_only_when_selected(monkeypatch):
+    entry_point = EntryPointStub("external", click.Command("external"))
+    monkeypatch.setattr(cli_module, "_entry_points", lambda: (entry_point,))
+
+    result = CliRunner().invoke(cli, ["external"])
+
+    assert result.exit_code == 0
+    assert entry_point.loaded is True
+
+
+def test_builtin_wins_plugin_collision(monkeypatch):
+    group = cli_module.PluginGroup("root")
+    group.add_command(click.Command("run"))
+    entry_point = EntryPointStub("run", click.Command("replacement"))
+    monkeypatch.setattr(cli_module, "_entry_points", lambda: (entry_point,))
+
+    result = CliRunner().invoke(group, ["run"])
+
+    assert result.exit_code == 0
+    assert entry_point.loaded is False
+
+
+def test_duplicate_plugin_names_are_structured_error(monkeypatch):
+    monkeypatch.setattr(
+        cli_module,
+        "_entry_points",
+        lambda: (EntryPointStub("same"), EntryPointStub("same")),
+    )
+    result, payload = invoke_json(["same"])
+
+    assert result.exit_code == ExitCode.USAGE
+    assert payload["error"]["type"] == "PluginError"
+    assert "Duplicate" in payload["error"]["message"]
+
+
+@pytest.mark.parametrize(
+    ("entry_point", "message"),
+    [
+        (
+            EntryPointStub("broken", error=RuntimeError("import failed")),
+            "Could not load",
+        ),
+        (EntryPointStub("broken", value=object()), "click.Command"),
+    ],
+)
+def test_plugin_load_failures_are_structured(monkeypatch, entry_point, message):
+    monkeypatch.setattr(cli_module, "_entry_points", lambda: (entry_point,))
+    result, payload = invoke_json(["broken"])
+
+    assert result.exit_code == ExitCode.USAGE
+    assert payload["error"]["type"] == "PluginError"
+    assert message in payload["error"]["message"]
+
+
+def test_plugin_discovery_failure_is_structured(monkeypatch):
+    def fail():
+        raise PluginError("discovery failed")
+
+    monkeypatch.setattr(cli_module, "_entry_points", fail)
+    result, payload = invoke_json(["external"])
+
+    assert result.exit_code == ExitCode.USAGE
+    assert payload["error"]["phase"] == "plugin"
+
+
+def test_importlib_plugin_discovery_failure(monkeypatch):
+    def fail(**kwargs):
+        del kwargs
+        raise RuntimeError("metadata failed")
+
+    monkeypatch.setattr(cli_module.metadata, "entry_points", fail)
+    with pytest.raises(PluginError, match="metadata failed"):
+        cli_module._entry_points()
+
+
+def test_importlib_compatibility_plugin_discovery(monkeypatch):
+    class Selectable:
+        def select(self, **kwargs):
+            assert kwargs == {"group": "herethere.cli"}
+            return ("entry",)
+
+    calls = 0
+
+    def compatible(**kwargs):
+        nonlocal calls
+        calls += 1
+        if kwargs:
+            raise TypeError
+        return Selectable()
+
+    monkeypatch.setattr(cli_module.metadata, "entry_points", compatible)
+    assert cli_module._entry_points() == ("entry",)
+    assert calls == 2
+
+
+def test_group_list_commands_includes_plugins(monkeypatch):
+    monkeypatch.setattr(
+        cli_module, "_entry_points", lambda: (EntryPointStub("external"),)
+    )
+    context = click.Context(cli)
+    assert "external" in cli.list_commands(context)
+
+
+def test_cli_main_non_standalone_returns_expected_exit_code(monkeypatch, capsys):
+    @click.command()
+    def failure():
+        raise ConnectionFailure("denied", phase="authentication")
+
+    monkeypatch.setattr(
+        cli_module, "_entry_points", lambda: (EntryPointStub("failure", failure),)
+    )
+    result = cli.main(["failure"], standalone_mode=False)
+
+    assert result == ExitCode.CONNECTION
+    assert capsys.readouterr().err == "Error: denied\n"
+
+
+def test_json_main_non_standalone_returns_exit_code(capsys):
+    result = cli.main(["--json", "missing"], standalone_mode=False)
+    payload = json.loads(capsys.readouterr().out)
+
+    assert result == ExitCode.USAGE
+    assert payload["command"] == "missing"
+
+
+def test_text_mode_propagates_unexpected_errors(monkeypatch):
+    @click.command()
+    def failure():
+        raise RuntimeError("bug")
+
+    monkeypatch.setattr(
+        cli_module, "_entry_points", lambda: (EntryPointStub("failure", failure),)
+    )
+    result = CliRunner().invoke(cli, ["failure"])
+
+    assert result.exit_code == 1
+    assert isinstance(result.exception, RuntimeError)
+
+
+def test_option_callbacks_ignore_non_cli_groups():
+    command = click.Command("plain")
+    context = click.Context(command)
+
+    assert cli_module._set_output_format(context, None, "text") == "text"
+    assert cli_module._set_json_requested(context, None, True) is True
+    assert cli_module._set_max_output(context, None, 10) == 10
+
+
+def test_max_output_callback_skips_missing_collector():
+    group = cli_module.PluginGroup("root")
+    collector = BoundedTextCollector()
+    group._stdout_collector = collector
+    group._stderr_collector = None
+    context = click.Context(group)
+
+    assert cli_module._set_max_output(context, None, 10) == 10
+    assert collector.limit == 10
+
+
+def test_json_without_command_has_empty_command_name():
+    result = CliRunner().invoke(cli, ["--json"])
+    payload = json.loads(result.output)
+    assert result.exit_code == ExitCode.USAGE
+    assert payload["command"] == ""

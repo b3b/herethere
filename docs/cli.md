@@ -1,0 +1,99 @@
+# Using `there` from a terminal
+
+`there` is the terminal entry point for herethere commands. To see the
+commands available in the current environment:
+
+```console
+there --help
+```
+
+Installed extension packages can add commands to this list. To see the
+arguments and options accepted by a command:
+
+```console
+there COMMAND --help
+```
+
+## Output format
+
+Commands produce readable text by default:
+
+```console
+there COMMAND [OPTIONS]
+```
+
+For scripts and other tools, request one JSON object:
+
+```console
+there --json COMMAND [OPTIONS]
+there --format json COMMAND [OPTIONS]
+```
+
+`--json` and `--format` configure the whole invocation, so they must appear
+before the command name. `--format text` explicitly selects normal terminal
+output.
+
+JSON responses always contain:
+
+```json
+{
+  "ok": true,
+  "command": "COMMAND",
+  "exit_code": 0,
+  "stdout": "",
+  "stdout_bytes": 0,
+  "stdout_truncated": false,
+  "stderr": "",
+  "stderr_bytes": 0,
+  "stderr_truncated": false,
+  "error": null
+}
+```
+
+On failure, `ok` is `false` and `error` describes the error type, the phase
+which failed, and a readable message. JSON mode writes no additional messages
+or tracebacks outside this object.
+
+## Connecting to a target
+
+Commands which connect to a herethere target accept:
+
+```text
+--config PATH
+--timeout SECONDS
+--max-output BYTES
+```
+
+Use `--config` to select a specific connection file:
+
+```console
+there --json COMMAND --config ./there.env
+```
+
+Without `--config`, herethere searches the current directory and its parents
+for `there.env`. A connection file uses these variables:
+
+```dotenv
+THERE_HOST=127.0.0.1
+THERE_PORT=8022
+THERE_USERNAME=here
+THERE_PASSWORD=secret
+```
+
+Environment variables with the same names override values from the file.
+
+`--timeout` limits how long the operation may take. `--max-output` controls
+how many bytes of each output stream JSON mode retains. The default is 65536
+bytes and the maximum is 1048576 bytes. When output is larger, herethere keeps
+the end of the stream and sets the corresponding `*_truncated` field.
+
+## Exit codes
+
+| Code | Meaning |
+| ---: | --- |
+| `0` | Command completed successfully |
+| `2` | Invalid command usage or connection configuration |
+| `3` | Connection or authentication failed |
+| `4` | The remote operation failed |
+| `5` | A local file or I/O operation failed |
+| `124` | The operation timed out |

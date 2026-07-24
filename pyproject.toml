@@ -39,6 +39,9 @@ dependencies = [
     "python-dotenv",
 ]
 
+[project.scripts]
+there = "herethere.there.cli:cli"
+
 [project.optional-dependencies]
 magic = [
     "ipython",
