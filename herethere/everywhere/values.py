@@ -11,6 +11,12 @@ MAX_VALUE_PAYLOAD_SIZE = 32 * 1024 * 1024
 class RemoteValueError(RuntimeError):
     """Raised when remote value computation fails."""
 
+    def __init__(self, error_type: str, message: str, traceback_text: str):
+        self.error_type = error_type
+        self.remote_message = message
+        self.traceback = traceback_text
+        super().__init__(f"{error_type}: {message}\n{traceback_text}")
+
 
 def dumps_value(value: Any, max_payload_size: int = MAX_VALUE_PAYLOAD_SIZE) -> str:
     """Serialize a remote value event as JSON."""
@@ -57,8 +63,9 @@ def loads_value(message: str) -> Any:
 
     if event_type == "error":
         raise RemoteValueError(
-            f"{event.get('error_type', 'Exception')}: {event.get('message', '')}\n"
-            f"{event.get('traceback', '')}"
+            event.get("error_type", "Exception"),
+            event.get("message", ""),
+            event.get("traceback", ""),
         )
 
     raise ValueError(f"Unexpected remote value event: {event!r}")

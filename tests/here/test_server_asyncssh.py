@@ -1,7 +1,11 @@
 import asyncssh
 import pytest
 
-from herethere.here.server import MAX_COMMAND_LENGTH, SSHServerHere, handle_client
+from herethere.here.server import (
+    MAX_COMMAND_LENGTH,
+    SSHServerHere,
+    handle_client,
+)
 
 
 class TestServer(asyncssh.SSHServer):

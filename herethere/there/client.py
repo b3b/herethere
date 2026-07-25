@@ -4,19 +4,67 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 import sys
 from contextlib import AbstractAsyncContextManager
+from dataclasses import dataclass
 from typing import TextIO
 
 import asyncssh
 
 from herethere.everywhere.config import ConnectionConfig
+from herethere.everywhere.live import PROTOCOL_EXECUTE_COMMAND
 from herethere.everywhere.logging import logger
 from herethere.everywhere.values import loads_value
 
 
 class ConnectionNotConfiguredError(Exception):
     """Connection configuration is missing."""
+
+
+class ProtocolVersionError(RuntimeError):
+    """The remote server does not support a required protocol command."""
+
+
+class ProtocolError(RuntimeError):
+    """The remote server returned malformed structured protocol data."""
+
+
+@dataclass(frozen=True)
+class RemoteError:
+    """Structured error returned by a live-session operation."""
+
+    remote_type: str
+    message: str
+    traceback: str
+
+
+@dataclass(frozen=True)
+class ExecutionResult:
+    """Result of structured live-session code execution."""
+
+    error: RemoteError | None = None
+
+    @property
+    def ok(self) -> bool:
+        """Whether execution completed without a Python exception."""
+        return self.error is None
+
+
+def _forward_stream_event(
+    event: dict,
+    stdout: TextIO,
+    stderr: TextIO,
+) -> None:
+    writer = {
+        "stdout": stdout,
+        "stderr": stderr,
+    }.get(event.get("stream"))
+    if writer is None or not isinstance(event.get("data"), str):
+        raise ProtocolError("Remote server returned an invalid stream event.")
+    writer.write(event["data"])
+    if hasattr(writer, "flush"):
+        writer.flush()
 
 
 class PersistentConnection(AbstractAsyncContextManager):
@@ -79,15 +127,18 @@ class Client:
 
     def __init__(self):
         self.connection = PersistentConnection()
+        self.structured_protocol: bool | None = None
 
     async def copy(self) -> Client:
         """Return a copy of the configured connection."""
         client = Client()
         await client.connect(self.connection.config)
+        client.structured_protocol = self.structured_protocol
         return client
 
     async def connect(self, config: ConnectionConfig):
         """Connect to remote."""
+        self.structured_protocol = None
         await self.connection.configure(config)
 
     async def disconnect(self):
@@ -101,7 +152,10 @@ class Client:
         stderr: TextIO | None = None,
     ) -> str:
         """Execute python code on the remote side."""
-        await self._execute_code("code", code, stdout, stderr)
+        try:
+            await self.execute(code, stdout, stderr)
+        except ProtocolVersionError:
+            await self._execute_code("code", code, stdout, stderr)
 
     async def runcode_background(
         self,
@@ -123,6 +177,10 @@ class Client:
 
     async def get(self, expression: str):
         """Evaluate a Python expression remotely and return its Python value."""
+        return await self._get_value(expression)
+
+    async def _get_value(self, expression: str):
+        """Run the legacy value command shared with compatibility fallback."""
         async with self.connection as ssh:
             async with ssh.create_process("value") as process:
                 process.stdin.write(expression)
@@ -139,6 +197,28 @@ class Client:
                     raise RuntimeError(message)
 
                 return loads_value(message)
+
+    async def execute(
+        self,
+        code: str,
+        stdout: TextIO | None = None,
+        stderr: TextIO | None = None,
+    ) -> ExecutionResult:
+        """Execute code using the structured live-session protocol."""
+        if self.structured_protocol is False:
+            raise _protocol_version_error()
+        try:
+            event = await self._structured_operation(
+                PROTOCOL_EXECUTE_COMMAND,
+                code,
+                stdout=stdout,
+                stderr=stderr,
+            )
+        except ProtocolVersionError:
+            self.structured_protocol = False
+            raise
+        self.structured_protocol = True
+        return ExecutionResult(error=_remote_error(event))
 
     async def upload(self, localpaths: list[str], remotepath) -> None:
         """Upload files and directories to remote via SFTP."""
@@ -221,3 +301,94 @@ class Client:
                     with contextlib.suppress(Exception):
                         await asyncio.wait_for(process.wait(), timeout=1)
                     raise
+
+    async def _structured_operation(
+        self,
+        command: str,
+        payload: str,
+        stdout: TextIO | None = None,
+        stderr: TextIO | None = None,
+    ) -> dict:
+        """Run a structured JSON-lines command and return its final event."""
+        stdout = stdout or sys.stdout
+        stderr = stderr or sys.stderr
+        async with self.connection as ssh:
+            async with ssh.create_process(command) as process:
+                process.stdin.write(payload)
+                process.stdin.write_eof()
+                final_event = None
+                diagnostic_stderr: list[str] = []
+
+                async def read_events():
+                    nonlocal final_event
+                    while line := await process.stdout.readline():
+                        try:
+                            event = json.loads(line)
+                        except (TypeError, json.JSONDecodeError) as exc:
+                            raise ProtocolError(
+                                "Remote server returned malformed protocol output."
+                            ) from exc
+                        if not isinstance(event, dict):
+                            raise ProtocolError(
+                                "Remote server returned a non-object protocol event."
+                            )
+                        event_type = event.get("type")
+                        if event_type == "stream":
+                            _forward_stream_event(event, stdout, stderr)
+                        elif event_type == "result":
+                            if final_event is not None:
+                                raise ProtocolError(
+                                    "Remote server returned multiple result events."
+                                )
+                            final_event = event
+                        else:
+                            raise ProtocolError(
+                                "Remote server returned an unknown protocol event."
+                            )
+
+                async def read_diagnostics():
+                    while data := await process.stderr.readline():
+                        diagnostic_stderr.append(data)
+
+                try:
+                    await asyncio.gather(read_events(), read_diagnostics())
+                    await process.wait()
+                except asyncio.CancelledError:
+                    process.terminate()
+                    with contextlib.suppress(Exception):
+                        await asyncio.wait_for(process.wait(), timeout=1)
+                    raise
+
+                if final_event is None:
+                    diagnostic = "".join(diagnostic_stderr)
+                    if "Unknown command" in diagnostic:
+                        raise _protocol_version_error()
+                    raise ProtocolError("Remote protocol returned no result event.")
+                if diagnostic_stderr:
+                    stderr.write("".join(diagnostic_stderr))
+                    if hasattr(stderr, "flush"):
+                        stderr.flush()
+                if not isinstance(final_event.get("ok"), bool):
+                    raise ProtocolError("Remote result event has no valid status.")
+                return final_event
+
+
+def _protocol_version_error() -> ProtocolVersionError:
+    return ProtocolVersionError(
+        "The remote server does not support structured live execution. "
+        "Upgrade herethere on the remote server."
+    )
+
+
+def _remote_error(event: dict) -> RemoteError | None:
+    """Decode an optional structured remote error."""
+    if event["ok"]:
+        return None
+    error = event.get("error")
+    if not isinstance(error, dict):
+        raise ProtocolError("Remote failure result has no error details.")
+    return RemoteError(
+        remote_type=str(error.get("remote_type", "Exception")),
+        message=str(error.get("message", "")),
+        traceback=str(error.get("traceback", "")),
+    )

@@ -1,5 +1,6 @@
 import asyncio
 import contextlib
+import json
 import os
 from pathlib import Path
 
@@ -477,6 +478,52 @@ async def test_namespace_variable_updated(
         )
         assert result.stdout == "1\n"
         assert result.stderr == ""
+
+
+@pytest.mark.asyncio
+async def test_structured_execute_streams_output_and_reports_success(
+    server_instance, connection_config
+):
+    async with asyncssh.connect(**connection_config.asdict, known_hosts=None) as conn:
+        result = await conn.run(
+            "execute-v1",
+            check=True,
+            input=(
+                "import sys\n"
+                "structured_value = 41\n"
+                "print('out')\n"
+                "print('err', file=sys.stderr)\n"
+            ),
+        )
+
+    events = [json.loads(line) for line in result.stdout.splitlines()]
+    assert events == [
+        {"type": "stream", "stream": "stdout", "data": "out"},
+        {"type": "stream", "stream": "stdout", "data": "\n"},
+        {"type": "stream", "stream": "stderr", "data": "err"},
+        {"type": "stream", "stream": "stderr", "data": "\n"},
+        {"type": "result", "ok": True},
+    ]
+    assert result.stderr == ""
+
+
+@pytest.mark.asyncio
+async def test_structured_execute_reports_remote_exception(
+    server_instance, connection_config
+):
+    async with asyncssh.connect(**connection_config.asdict, known_hosts=None) as conn:
+        result = await conn.run(
+            "execute-v1",
+            check=True,
+            input="raise LookupError('missing')",
+        )
+
+    events = [json.loads(line) for line in result.stdout.splitlines()]
+    assert events[-1]["ok"] is False
+    assert events[-1]["error"]["remote_type"] == "LookupError"
+    assert events[-1]["error"]["message"] == "missing"
+    assert "LookupError: missing" in events[-1]["error"]["traceback"]
+    assert any(event.get("stream") == "stderr" for event in events)
 
 
 @pytest.mark.asyncio

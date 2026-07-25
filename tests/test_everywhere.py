@@ -87,8 +87,11 @@ def test_value_serialization_rejects_oversized_payload():
 def test_value_error_deserialization_raises_remote_value_error():
     message = dumps_error(NameError("missing"), "Traceback text")
 
-    with pytest.raises(RemoteValueError, match="NameError: missing"):
+    with pytest.raises(RemoteValueError, match="NameError: missing") as caught:
         loads_value(message)
+    assert caught.value.error_type == "NameError"
+    assert caught.value.remote_message == "missing"
+    assert caught.value.traceback == "Traceback text"
 
 
 def test_value_deserialization_rejects_unknown_serializer():

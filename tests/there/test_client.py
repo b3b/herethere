@@ -11,6 +11,8 @@ from herethere.there.client import (
     Client,
     ConnectionNotConfiguredError,
     PersistentConnection,
+    ProtocolError,
+    ProtocolVersionError,
 )
 from herethere.there.commands.log import LOG_COMMAND_TEMPLATE
 
@@ -180,6 +182,36 @@ async def test_get_awaits_coroutine(there):
 
 
 @pytest.mark.asyncio
+async def test_structured_execute_and_get_share_live_namespace(there):
+    out = StringIO()
+    err = StringIO()
+
+    execution = await there.execute(
+        "live_cli_value = 40\nprint('created')",
+        stdout=out,
+        stderr=err,
+    )
+    value = await there.get("live_cli_value + 2")
+
+    assert execution.ok
+    assert execution.error is None
+    assert out.getvalue() == "created\n"
+    assert err.getvalue() == ""
+    assert value == 42
+
+
+@pytest.mark.asyncio
+async def test_structured_execute_returns_remote_error(there):
+    err = StringIO()
+
+    execution = await there.execute("raise KeyError('bad')", stderr=err)
+    assert not execution.ok
+    assert execution.error.remote_type == "KeyError"
+    assert "KeyError" in execution.error.traceback
+    assert "KeyError" in err.getvalue()
+
+
+@pytest.mark.asyncio
 async def test_file_uploaded(there, tmpdir):
     await there.upload("tests/hello.txt", "hello_remote.txt")
     with open(Path(tmpdir) / "hello_remote.txt") as f:
@@ -211,9 +243,11 @@ async def test_directory_downloaded(there, tmpdir):
 
 @pytest.mark.asyncio
 async def test_connection_copied(there):
+    there.structured_protocol = True
     connection = await there.copy()
     try:
         assert connection.connection.config == there.connection.config
+        assert connection.structured_protocol is True
     finally:
         await connection.disconnect()
 
@@ -331,6 +365,15 @@ class FakeConnectionContext:
         return FakeProcessContext(self.process)
 
 
+def protocol_process(mocker, stdout, stderr=""):
+    process = mocker.Mock()
+    process.stdin = mocker.Mock()
+    process.stdout = ReaderOnce(*stdout)
+    process.stderr = ReaderOnce(stderr)
+    process.wait = mocker.AsyncMock()
+    return process
+
+
 @pytest.mark.asyncio
 async def test_execute_code_accepts_writer_without_flush(mocker):
     process = mocker.Mock()
@@ -339,11 +382,17 @@ async def test_execute_code_accepts_writer_without_flush(mocker):
     process.stderr = ReaderOnce("")
     process.wait = mocker.AsyncMock()
     stdout = WriterWithoutFlush()
+    stderr = WriterWithoutFlush()
 
     client = Client()
     client.connection = FakeConnectionContext(process)
 
-    await client._execute_code("code", "print('hello')", stdout=stdout)
+    await client._execute_code(
+        "code",
+        "print('hello')",
+        stdout=stdout,
+        stderr=stderr,
+    )
 
     assert process.command == "code"
     process.stdin.write.assert_called_once_with("print('hello')")
@@ -413,3 +462,178 @@ async def test_get_includes_stderr_when_value_command_returns_no_output(mocker):
 
     with pytest.raises(RuntimeError, match="remote failure"):
         await client.get("1 + 1")
+
+
+@pytest.mark.asyncio
+async def test_structured_client_decodes_streams_and_result(mocker):
+    process = protocol_process(
+        mocker,
+        [
+            '{"type":"stream","stream":"stdout","data":"out"}\n',
+            '{"type":"stream","stream":"stderr","data":"err"}\n',
+            '{"type":"result","ok":true}\n',
+        ],
+    )
+    client = Client()
+    client.connection = FakeConnectionContext(process)
+    stdout = WriterWithoutFlush()
+    stderr = WriterWithoutFlush()
+
+    result = await client.execute("pass", stdout=stdout, stderr=stderr)
+
+    assert result.ok
+    assert client.structured_protocol is True
+    assert stdout.written == "out"
+    assert stderr.written == "err"
+
+
+@pytest.mark.asyncio
+async def test_structured_client_detects_old_server(mocker):
+    process = protocol_process(mocker, [], "Unknown command")
+    client = Client()
+    client.connection = FakeConnectionContext(process)
+
+    with pytest.raises(ProtocolVersionError, match="Upgrade"):
+        await client.execute("pass")
+    assert client.structured_protocol is False
+
+
+@pytest.mark.asyncio
+async def test_structured_client_rejects_missing_result(mocker):
+    process = protocol_process(mocker, [], "diagnostic")
+    client = Client()
+    client.connection = FakeConnectionContext(process)
+
+    with pytest.raises(ProtocolError, match="no result"):
+        await client.execute("pass")
+
+
+@pytest.mark.asyncio
+async def test_runcode_falls_back_to_legacy_protocol(mocker):
+    client = Client()
+    structured = mocker.patch.object(
+        client,
+        "execute",
+        new=mocker.AsyncMock(side_effect=ProtocolVersionError("old")),
+    )
+    legacy = mocker.patch.object(client, "_execute_code", new=mocker.AsyncMock())
+
+    await client.runcode("print('hello')", stdout="out", stderr="err")
+
+    structured.assert_awaited_once_with("print('hello')", "out", "err")
+    legacy.assert_awaited_once_with("code", "print('hello')", "out", "err")
+
+
+@pytest.mark.asyncio
+async def test_cached_legacy_protocol_skips_structured_attempt(mocker):
+    client = Client()
+    client.structured_protocol = False
+    structured = mocker.patch.object(
+        client,
+        "_structured_operation",
+        new=mocker.AsyncMock(),
+    )
+    with pytest.raises(ProtocolVersionError, match="Upgrade"):
+        await client.execute("pass")
+
+    structured.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("lines", "message"),
+    [
+        (["not-json\n"], "malformed"),
+        (["null\n"], "non-object"),
+        (["[]\n"], "non-object"),
+        (
+            ['{"type":"stream","stream":"stdout","data":1}\n'],
+            "invalid stream",
+        ),
+        (['{"type":"progress"}\n'], "unknown protocol"),
+        (
+            [
+                '{"type":"result","ok":true}\n',
+                '{"type":"result","ok":true}\n',
+            ],
+            "multiple result",
+        ),
+        (['{"type":"result","ok":"yes"}\n'], "valid status"),
+    ],
+)
+async def test_structured_client_rejects_invalid_events(mocker, lines, message):
+    process = protocol_process(mocker, lines)
+    client = Client()
+    client.connection = FakeConnectionContext(process)
+
+    with pytest.raises(ProtocolError, match=message):
+        await client.execute("pass")
+
+
+@pytest.mark.asyncio
+async def test_structured_client_rejects_failure_without_details(mocker):
+    process = protocol_process(mocker, ['{"type":"result","ok":false}\n'])
+    client = Client()
+    client.connection = FakeConnectionContext(process)
+
+    with pytest.raises(ProtocolError, match="no error details"):
+        await client.execute("pass")
+
+
+@pytest.mark.asyncio
+async def test_structured_client_forwards_protocol_diagnostics(mocker):
+    process = protocol_process(
+        mocker,
+        ['{"type":"result","ok":true}\n'],
+        "diagnostic",
+    )
+    client = Client()
+    client.connection = FakeConnectionContext(process)
+    stderr = WriterWithoutFlush()
+
+    result = await client.execute("pass", stderr=stderr)
+
+    assert result.ok
+    assert stderr.written == "diagnostic"
+
+
+@pytest.mark.asyncio
+async def test_structured_client_flushes_protocol_diagnostics(mocker):
+    process = protocol_process(
+        mocker,
+        ['{"type":"result","ok":true}\n'],
+        "diagnostic",
+    )
+    client = Client()
+    client.connection = FakeConnectionContext(process)
+    stderr = mocker.Mock()
+
+    result = await client.execute("pass", stderr=stderr)
+
+    assert result.ok
+    stderr.write.assert_called_once_with("diagnostic")
+    stderr.flush.assert_called_once_with()
+
+
+@pytest.mark.asyncio
+async def test_structured_client_cancellation_terminates_process(mocker):
+    class BlockingReader:
+        async def readline(self):
+            await asyncio.Event().wait()
+
+    process = mocker.Mock()
+    process.stdin = mocker.Mock()
+    process.stdout = BlockingReader()
+    process.stderr = BlockingReader()
+    process.wait = mocker.AsyncMock()
+    client = Client()
+    client.connection = FakeConnectionContext(process)
+
+    task = asyncio.create_task(client.execute("pass"))
+    await asyncio.sleep(0)
+    task.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    process.terminate.assert_called_once_with()
+    process.wait.assert_awaited_once_with()

@@ -15,7 +15,12 @@ from typing import Any
 import asyncssh
 
 from herethere.everywhere.code import runcode
+from herethere.everywhere.live import (
+    PROTOCOL_EXECUTE_COMMAND,
+    execute_live,
+)
 from herethere.everywhere.logging import logger
+from herethere.everywhere.protocol import EventStream, write_event
 from herethere.everywhere.redirected_output import redirect_output
 from herethere.everywhere.values import dumps_error, dumps_value
 from herethere.here.config import ServerConfig
@@ -93,6 +98,21 @@ async def handle_value_command(process: asyncssh.SSHServerProcess, namespace: di
     await process.stdout.drain()
 
 
+async def handle_execute_command(process: asyncssh.SSHServerProcess, namespace: dict):
+    """Execute code and return JSON-lines output events plus a final status."""
+    data = await process.stdin.read(MAX_COMMAND_LENGTH)
+    error = execute_live(
+        data,
+        namespace,
+        stdout=EventStream(process.stdout, "stdout"),
+        stderr=EventStream(process.stdout, "stderr"),
+    )
+    event = {"type": "result", "ok": error is None}
+    if error is not None:
+        event["error"] = error.asdict()
+    write_event(process.stdout, event)
+
+
 async def handle_client(process: asyncssh.SSHServerProcess, namespace: dict):
     """SSH requests handler."""
 
@@ -118,6 +138,7 @@ async def handle_client(process: asyncssh.SSHServerProcess, namespace: dict):
             "background": handle_background_code_command,
             "shell": handle_shell_command,
             "value": handle_value_command,
+            PROTOCOL_EXECUTE_COMMAND: handle_execute_command,
         }[process.command]
     except KeyError:
         logger.error("Unknown command: %s", process.command[:64])

@@ -87,6 +87,35 @@ how many bytes of each output stream JSON mode retains. The default is 65536
 bytes and the maximum is 1048576 bytes. When output is larger, herethere keeps
 the end of the stream and sets the corresponding `*_truncated` field.
 
+## Running code in the live interpreter
+
+`run` executes Python in the existing remote process and namespace:
+
+```console
+there run app.py
+there run -
+there run --code "counter += 1"
+there --json run --config ./there.env app.py
+```
+
+Supply exactly one file, `-` for UTF-8 code on stdin, or `--code`. Remote
+stdout and stderr are kept separate. A remote Python exception produces exit
+code `4`; JSON mode includes its Python type, message, and bounded traceback.
+
+`get` exposes the same expression operation as Jupyter's `%there get`:
+
+```console
+there get "counter"
+there --json get --config ./there.env "app.root"
+```
+
+Text mode prints the returned Python value. JSON-compatible results are returned
+in the `value` field; other values produce a structured serialization error.
+Statements are rejected before connecting.
+
+When `there run` reports `ProtocolVersionError`, upgrade herethere on the remote
+target before retrying.
+
 ## Exit codes
 
 | Code | Meaning |

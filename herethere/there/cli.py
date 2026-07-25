@@ -1,5 +1,7 @@
 """Standalone command-line interface for herethere."""
 
+import ast
+import asyncio
 import io
 import json
 import sys
@@ -15,9 +17,17 @@ import asyncssh
 import click
 
 from herethere.everywhere.config import ConnectionConfig, ConnectionConfigError
+from herethere.everywhere.values import RemoteValueError
+from herethere.there.client import (
+    Client,
+    ProtocolError,
+    ProtocolVersionError,
+    RemoteError,
+)
 
 DEFAULT_MAX_OUTPUT = 64 * 1024
 MAX_MAX_OUTPUT = 1024 * 1024
+MAX_CODE_BYTES = 64 * 1024
 PLUGIN_GROUP = "herethere.cli"
 
 
@@ -39,10 +49,17 @@ class CLIError(Exception):
     error_type = "RemoteOperationError"
     phase: str | None = None
 
-    def __init__(self, message: str, *, phase: str | None = None):
+    def __init__(
+        self,
+        message: str,
+        *,
+        phase: str | None = None,
+        details: dict[str, Any] | None = None,
+    ):
         super().__init__(message)
         if phase is not None:
             self.phase = phase
+        self.details = details or {}
 
 
 class ConnectionFailure(CLIError):
@@ -73,6 +90,43 @@ class RemoteOperationError(CLIError):
     """An expected remote operation failure."""
 
     phase = "operation"
+
+
+class ValueSerializationFailure(RemoteOperationError):
+    """A returned Python value cannot be represented in strict JSON."""
+
+    error_type = "ValueSerializationError"
+    phase = "serialization"
+
+
+class RemoteExecutionFailure(RemoteOperationError):
+    """Python execution or evaluation failed in the live interpreter."""
+
+    error_type = "RemoteExecutionError"
+    phase = "remote_execution"
+
+    def __init__(self, error: RemoteError):
+        super().__init__(
+            error.message,
+            details={
+                "remote_type": error.remote_type,
+                "traceback": error.traceback,
+            },
+        )
+
+
+class ProtocolVersionFailure(RemoteOperationError):
+    """The remote server is too old for a structured operation."""
+
+    error_type = "ProtocolVersionError"
+    phase = "remote_execution"
+
+
+class OperationTimeout(CLIError):
+    """A connection or remote execution exceeded its total time budget."""
+
+    exit_code = ExitCode.TIMEOUT
+    error_type = "TimeoutError"
 
 
 @dataclass(frozen=True)
@@ -466,6 +520,7 @@ def _error_details(
             "type": error.error_type,
             "phase": error.phase,
             "message": str(error),
+            **error.details,
         }
     rule = next(rule for rule in _ERROR_RULES if isinstance(error, rule.exception_type))
     return rule.describe(error)
@@ -495,6 +550,130 @@ def cli(ctx: click.Context, output_format: str, json_output: bool):
     ctx.obj = CLIContext(output_format="json" if json_output else output_format)
 
 
+def _validate_live_input(text: str, label: str) -> None:
+    size = len(text.encode("utf-8"))
+    if size > MAX_CODE_BYTES:
+        raise click.UsageError(
+            f"{label} is too large ({size} bytes > {MAX_CODE_BYTES} bytes)."
+        )
+
+
+def _read_run_source(source: str | None, code_text: str | None) -> str:
+    if source is not None and code_text is not None:
+        raise click.UsageError("Exactly one code source is required.")
+    if source is None and code_text is None:
+        raise click.UsageError("Exactly one code source is required.")
+    if code_text is not None:
+        return code_text
+    if source == "-":
+        try:
+            return sys.stdin.read()
+        except (OSError, UnicodeError) as exc:
+            raise LocalIOError(f"Could not read stdin: {exc}") from exc
+    try:
+        return Path(source).read_text(encoding="utf-8")
+    except (OSError, UnicodeError) as exc:
+        raise LocalIOError(f"Could not read {source!r}: {exc}") from exc
+
+
+async def _run_remote_operation(config_path, timeout, operation):
+    config = load_connection_config(config_path)
+    client = Client()
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout if timeout is not None else None
+
+    async def wait_for_phase(awaitable, phase):
+        remaining = None if deadline is None else deadline - loop.time()
+        if remaining is not None and remaining <= 0:
+            awaitable.close()
+            raise OperationTimeout("operation timed out", phase=phase)
+        try:
+            if remaining is None:
+                return await awaitable
+            return await asyncio.wait_for(awaitable, timeout=remaining)
+        except asyncio.TimeoutError as exc:
+            raise OperationTimeout("operation timed out", phase=phase) from exc
+
+    try:
+        try:
+            await wait_for_phase(client.connect(config), "connection")
+        except (asyncssh.PermissionDenied, OperationTimeout):
+            raise
+        except (asyncssh.Error, OSError) as exc:
+            raise ConnectionFailure(str(exc)) from exc
+        return await wait_for_phase(operation(client), "remote_execution")
+    finally:
+        await client.disconnect()
+
+
+def _call_remote(config, timeout, operation):
+    try:
+        return asyncio.run(_run_remote_operation(config, timeout, operation))
+    except ProtocolVersionError as exc:
+        raise ProtocolVersionFailure(str(exc)) from exc
+    except ProtocolError as exc:
+        raise RemoteOperationError(str(exc), phase="remote_execution") from exc
+    except RemoteValueError as exc:
+        raise RemoteExecutionFailure(
+            RemoteError(
+                remote_type=exc.error_type,
+                message=exc.remote_message,
+                traceback=exc.traceback,
+            )
+        ) from exc
+
+
+@cli.command("run")
+@remote_options
+@click.option("--code", "code_text", help="Execute code supplied on the command line.")
+@click.argument("source", required=False)
+def run_command(config, timeout, max_output, code_text, source):
+    """Execute a UTF-8 file, stdin (`-`), or `--code` in the live namespace."""
+    code = _read_run_source(source, code_text)
+    _validate_live_input(code, "Python code")
+
+    async def operation(client):
+        return await client.execute(code, stdout=sys.stdout, stderr=sys.stderr)
+
+    result = _call_remote(config, timeout, operation)
+    if not result.ok:
+        raise RemoteExecutionFailure(result.error)
+
+
+def _strict_json_value(value):
+    try:
+        return json.loads(json.dumps(value, allow_nan=False))
+    except (TypeError, ValueError) as exc:
+        raise ValueSerializationFailure(
+            f"Remote value is not JSON serializable: {exc}"
+        ) from exc
+
+
+@cli.command("get")
+@remote_options
+@click.argument("expression")
+@click.pass_context
+def get_command(ctx, config, timeout, max_output, expression):
+    """Get one Python expression value from the live namespace."""
+    del max_output
+    try:
+        ast.parse(expression, mode="eval")
+    except SyntaxError as exc:
+        raise click.UsageError(
+            "EXPRESSION must be exactly one Python expression."
+        ) from exc
+    _validate_live_input(expression, "Expression")
+
+    async def operation(client):
+        return await client.get(expression)
+
+    value = _call_remote(config, timeout, operation)
+    if ctx.find_root().obj.output_format == "text":
+        click.echo(repr(value))
+        return None
+    return {"value": _strict_json_value(value)}
+
+
 __all__ = (
     "BoundedTextCollector",
     "CLIContext",
@@ -506,7 +685,13 @@ __all__ = (
     "MAX_MAX_OUTPUT",
     "PluginError",
     "RemoteOperationError",
+    "OperationTimeout",
+    "ProtocolVersionFailure",
+    "RemoteExecutionFailure",
+    "ValueSerializationFailure",
     "cli",
+    "get_command",
     "load_connection_config",
     "remote_options",
+    "run_command",
 )

@@ -1,8 +1,10 @@
+import asyncio
 import builtins
 import importlib
 import json
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import asyncssh
 import click
@@ -17,7 +19,9 @@ from herethere.there.cli import (
     ConnectionFailure,
     ExitCode,
     LocalIOError,
+    OperationTimeout,
     PluginError,
+    ProtocolVersionFailure,
     RemoteOperationError,
     cli,
     load_connection_config,
@@ -42,6 +46,25 @@ class EntryPointStub:
 def invoke_json(args):
     result = CliRunner().invoke(cli, ["--json", *args])
     return result, json.loads(result.output)
+
+
+def install_fake_remote(monkeypatch, *, execute=None, get=None):
+    class FakeClient:
+        async def execute(self, code, stdout=None, stderr=None):
+            if execute is not None:
+                return execute(code, stdout, stderr)
+            return SimpleNamespace(ok=True, error=None)
+
+        async def get(self, expression):
+            if get is not None:
+                return get(expression)
+            return 42
+
+    def call(config, timeout, operation):
+        del config, timeout
+        return asyncio.run(operation(FakeClient()))
+
+    monkeypatch.setattr(cli_module, "_call_remote", call)
 
 
 def test_console_help_lists_builtins_without_ipython(monkeypatch):
@@ -544,3 +567,353 @@ def test_json_without_command_has_empty_command_name():
     payload = json.loads(result.output)
     assert result.exit_code == ExitCode.USAGE
     assert payload["command"] == ""
+
+
+@pytest.mark.parametrize(
+    ("args", "input_text", "expected"),
+    [
+        (["run", "--code", "print(1)"], None, "print(1)"),
+        (["run", "-"], "print(2)", "print(2)"),
+    ],
+)
+def test_run_accepts_code_and_stdin(monkeypatch, args, input_text, expected):
+    received = {}
+
+    def execute(code, stdout, stderr):
+        received.update(code=code, stdout=stdout, stderr=stderr)
+        return SimpleNamespace(ok=True, error=None)
+
+    install_fake_remote(monkeypatch, execute=execute)
+    result = CliRunner().invoke(cli, args, input=input_text)
+
+    assert result.exit_code == 0
+    assert received["code"] == expected
+    assert received["stdout"] is not None
+    assert received["stderr"] is not None
+    assert result.return_value is None
+
+
+def test_run_accepts_utf8_file(monkeypatch, tmp_path):
+    source = tmp_path / "app.py"
+    source.write_text("message = '€'", encoding="utf-8")
+    received = {}
+
+    def execute(code, stdout, stderr):
+        del stdout, stderr
+        received["code"] = code
+        return SimpleNamespace(ok=True, error=None)
+
+    install_fake_remote(monkeypatch, execute=execute)
+    result = CliRunner().invoke(cli, ["run", str(source)])
+
+    assert result.exit_code == 0
+    assert received["code"] == "message = '€'"
+
+
+@pytest.mark.parametrize(
+    "args",
+    (
+        ["run"],
+        ["run", "app.py", "--code", "pass"],
+    ),
+)
+def test_run_rejects_missing_or_conflicting_sources(args):
+    result, payload = invoke_json(args)
+
+    assert result.exit_code == ExitCode.USAGE
+    assert payload["error"]["type"] == "UsageError"
+    assert "Exactly one" in payload["error"]["message"]
+
+
+def test_run_maps_local_file_error():
+    result, payload = invoke_json(["run", "missing-app.py"])
+
+    assert result.exit_code == ExitCode.LOCAL_IO
+    assert payload["error"]["type"] == "LocalIOError"
+
+
+def test_run_maps_stdin_read_error(monkeypatch):
+    class BrokenInput:
+        def read(self):
+            raise OSError("broken input")
+
+    monkeypatch.setattr(cli_module.sys, "stdin", BrokenInput())
+
+    with pytest.raises(LocalIOError, match="broken input"):
+        cli_module._read_run_source("-", None)
+
+
+def test_run_rejects_oversized_input():
+    result, payload = invoke_json(["run", "--code", "x" * (65536 + 1)])
+
+    assert result.exit_code == ExitCode.USAGE
+    assert "too large" in payload["error"]["message"]
+
+
+def test_run_json_captures_output_and_remote_exception(monkeypatch):
+    remote_error = SimpleNamespace(
+        remote_type="ValueError",
+        message="bad",
+        traceback="Traceback\nValueError: bad",
+    )
+
+    def execute(code, stdout, stderr):
+        del code
+        stdout.write("out")
+        stderr.write("trace")
+        return SimpleNamespace(ok=False, error=remote_error)
+
+    install_fake_remote(monkeypatch, execute=execute)
+    result, payload = invoke_json(["run", "--code", "raise ValueError"])
+
+    assert result.exit_code == ExitCode.REMOTE
+    assert payload["stdout"] == "out"
+    assert payload["stderr"] == "trace"
+    assert payload["error"] == {
+        "type": "RemoteExecutionError",
+        "phase": "remote_execution",
+        "message": "bad",
+        "remote_type": "ValueError",
+        "traceback": "Traceback\nValueError: bad",
+    }
+
+
+def test_get_returns_decoded_json_value(monkeypatch):
+    def get(expression):
+        assert expression == "answer"
+        return (41, 42)
+
+    install_fake_remote(monkeypatch, get=get)
+    _, payload = invoke_json(["get", "answer"])
+
+    assert payload["value"] == [41, 42]
+
+
+@pytest.mark.parametrize("expression", ["x = 1", "x = 1; x", ""])
+def test_get_rejects_non_expressions_without_contacting_remote(monkeypatch, expression):
+    def fail(*args, **kwargs):
+        del args, kwargs
+        pytest.fail("remote operation called")
+
+    monkeypatch.setattr(cli_module, "_call_remote", fail)
+    result, payload = invoke_json(["get", expression])
+
+    assert result.exit_code == ExitCode.USAGE
+    assert payload["error"]["type"] == "UsageError"
+
+
+def test_get_text_renders_python_repr(monkeypatch):
+    install_fake_remote(monkeypatch, get=lambda expression: {"value"})
+
+    result = CliRunner().invoke(cli, ["get", "value"])
+
+    assert result.output == "{'value'}\n"
+    assert result.return_value is None
+
+
+@pytest.mark.parametrize("value", [{1}, float("nan")])
+def test_get_json_rejects_non_json_values(monkeypatch, value):
+    install_fake_remote(monkeypatch, get=lambda expression: value)
+
+    result, payload = invoke_json(["get", "value"])
+
+    assert result.exit_code == ExitCode.REMOTE
+    assert payload["error"]["type"] == "ValueSerializationError"
+
+
+def test_protocol_version_error_is_structured(monkeypatch):
+    def fail(config, timeout, operation):
+        del config, timeout, operation
+        raise ProtocolVersionFailure("upgrade")
+
+    monkeypatch.setattr(cli_module, "_call_remote", fail)
+    result, payload = invoke_json(["run", "--code", "pass"])
+
+    assert result.exit_code == ExitCode.REMOTE
+    assert payload["error"]["type"] == "ProtocolVersionError"
+
+
+@pytest.mark.parametrize(
+    ("error", "expected"),
+    [
+        (cli_module.ProtocolVersionError("old"), ProtocolVersionFailure),
+        (cli_module.ProtocolError("bad"), RemoteOperationError),
+        (
+            cli_module.RemoteValueError("NameError", "missing", "traceback"),
+            cli_module.RemoteExecutionFailure,
+        ),
+    ],
+)
+def test_call_remote_maps_client_protocol_errors(monkeypatch, error, expected):
+    def fail(awaitable):
+        awaitable.close()
+        raise error
+
+    monkeypatch.setattr(cli_module.asyncio, "run", fail)
+
+    with pytest.raises(expected):
+        cli_module._call_remote(None, None, None)
+
+
+def test_remote_operation_total_timeout_phases(monkeypatch):
+    class SlowClient:
+        async def connect(self, config):
+            del config
+            await asyncio.sleep(1)
+
+        async def disconnect(self):
+            pass
+
+    monkeypatch.setattr(cli_module, "Client", SlowClient)
+    monkeypatch.setattr(cli_module, "load_connection_config", lambda config: object())
+
+    with pytest.raises(OperationTimeout) as caught:
+        asyncio.run(
+            cli_module._run_remote_operation(
+                None,
+                0.001,
+                lambda client: asyncio.sleep(0),
+            )
+        )
+    assert caught.value.phase == "connection"
+
+
+def test_remote_execution_timeout_phase(monkeypatch):
+    class ClientStub:
+        async def connect(self, config):
+            del config
+
+        async def disconnect(self):
+            pass
+
+    monkeypatch.setattr(cli_module, "Client", ClientStub)
+    monkeypatch.setattr(cli_module, "load_connection_config", lambda config: object())
+
+    with pytest.raises(OperationTimeout) as caught:
+        asyncio.run(
+            cli_module._run_remote_operation(
+                None,
+                0.001,
+                lambda client: asyncio.sleep(1),
+            )
+        )
+    assert caught.value.phase == "remote_execution"
+
+
+def test_remote_operation_with_no_timeout_and_connection_error(monkeypatch):
+    class ClientStub:
+        fail = False
+
+        async def connect(self, config):
+            del config
+            if self.fail:
+                raise OSError("offline")
+
+        async def disconnect(self):
+            pass
+
+    monkeypatch.setattr(cli_module, "Client", ClientStub)
+    monkeypatch.setattr(cli_module, "load_connection_config", lambda config: object())
+
+    result = asyncio.run(
+        cli_module._run_remote_operation(
+            None,
+            None,
+            lambda client: asyncio.sleep(0, result=42),
+        )
+    )
+    assert result == 42
+
+    ClientStub.fail = True
+    with pytest.raises(ConnectionFailure, match="offline"):
+        asyncio.run(
+            cli_module._run_remote_operation(
+                None,
+                None,
+                lambda client: asyncio.sleep(0),
+            )
+        )
+
+
+def test_remote_operation_rejects_expired_budget(monkeypatch):
+    class ClientStub:
+        async def connect(self, config):
+            del config
+
+        async def disconnect(self):
+            pass
+
+    monkeypatch.setattr(cli_module, "Client", ClientStub)
+    monkeypatch.setattr(cli_module, "load_connection_config", lambda config: object())
+
+    with pytest.raises(OperationTimeout):
+        asyncio.run(
+            cli_module._run_remote_operation(
+                None,
+                0,
+                lambda client: asyncio.sleep(0),
+            )
+        )
+
+
+def test_get_maps_remote_failure(monkeypatch):
+    error = cli_module.RemoteError(
+        remote_type="NameError",
+        message="missing",
+        traceback="traceback",
+    )
+
+    def fail(config, timeout, operation):
+        del config, timeout, operation
+        raise cli_module.RemoteExecutionFailure(error)
+
+    monkeypatch.setattr(cli_module, "_call_remote", fail)
+    result, payload = invoke_json(["get", "missing"])
+
+    assert result.exit_code == ExitCode.REMOTE
+    assert payload["error"]["remote_type"] == "NameError"
+
+
+@pytest.mark.asyncio
+async def test_console_run_and_get_persist_live_namespace(
+    server_instance, connection_config, tmp_path
+):
+    config = tmp_path / "there.env"
+    config.write_text(
+        f"THERE_HOST={connection_config.host}\n"
+        f"THERE_PORT={connection_config.port}\n"
+        f"THERE_USERNAME={connection_config.username}\n"
+        f"THERE_PASSWORD={connection_config.password}\n",
+        encoding="utf-8",
+    )
+
+    run_result = await asyncio.to_thread(
+        CliRunner().invoke,
+        cli,
+        [
+            "--json",
+            "run",
+            "--config",
+            str(config),
+            "--code",
+            "console_live_value = 41\nprint('ready')",
+        ],
+    )
+    get_result = await asyncio.to_thread(
+        CliRunner().invoke,
+        cli,
+        [
+            "--json",
+            "get",
+            "--config",
+            str(config),
+            "console_live_value + 1",
+        ],
+    )
+
+    run_payload = json.loads(run_result.output)
+    get_payload = json.loads(get_result.output)
+    assert run_result.exit_code == 0
+    assert run_payload["stdout"] == "ready\n"
+    assert get_result.exit_code == 0
+    assert get_payload["value"] == 42
