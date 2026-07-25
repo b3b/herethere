@@ -116,6 +116,54 @@ Statements are rejected before connecting.
 When `there run` reports `ProtocolVersionError`, upgrade herethere on the remote
 target before retrying.
 
+## Transferring files and directories
+
+`upload` and `download` expose the same recursive SFTP operations and path
+semantics as Jupyter's `%there upload` and `%there download`:
+
+```console
+there upload local.py
+there upload local.py data remote-directory
+there download result.csv
+there download result.csv remote-directory ./downloads
+there --json upload --config ./there.env local.py .
+there --json download --config ./there.env result.csv ./result.csv
+```
+
+With one upload path, the remote destination defaults to `.`. With multiple
+paths, the final argument is the remote destination and all preceding arguments
+are local sources. Upload sources must exist before herethere connects.
+
+With one download path, the local destination defaults to `.`. With multiple
+paths, the final argument is the local destination and all preceding arguments
+are remote sources. Files and directories are transferred recursively.
+
+Transfer paths are resolved through the server's configured SFTP root. This
+root controls SFTP path resolution only; it does not restrict Python code
+executed in the remote process.
+
+Successful JSON responses add these command-specific fields to the common
+envelope:
+
+```json
+{
+  "local_paths": ["local.py", "data"],
+  "remote_path": "remote-directory"
+}
+```
+
+```json
+{
+  "remote_paths": ["result.csv", "remote-directory"],
+  "local_path": "./downloads"
+}
+```
+
+Missing or unreadable local sources and unwritable local destinations use exit
+code `5`. SFTP operation failures, including missing remote paths, use exit
+code `4`. A connection lost during transfer uses exit code `3`, and a transfer
+timeout uses exit code `124`. JSON mode reports these as structured errors.
+
 ## Exit codes
 
 | Code | Meaning |

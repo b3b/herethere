@@ -92,6 +92,13 @@ class RemoteOperationError(CLIError):
     phase = "operation"
 
 
+class SFTPFailure(RemoteOperationError):
+    """An SFTP operation failed on the remote target."""
+
+    error_type = "SFTPError"
+    phase = "transfer"
+
+
 class ValueSerializationFailure(RemoteOperationError):
     """A returned Python value cannot be represented in strict JSON."""
 
@@ -576,7 +583,13 @@ def _read_run_source(source: str | None, code_text: str | None) -> str:
         raise LocalIOError(f"Could not read {source!r}: {exc}") from exc
 
 
-async def _run_remote_operation(config_path, timeout, operation):
+async def _run_remote_operation(
+    config_path,
+    timeout,
+    operation,
+    *,
+    operation_phase="remote_execution",
+):
     config = load_connection_config(config_path)
     client = Client()
     loop = asyncio.get_running_loop()
@@ -601,14 +614,27 @@ async def _run_remote_operation(config_path, timeout, operation):
             raise
         except (asyncssh.Error, OSError) as exc:
             raise ConnectionFailure(str(exc)) from exc
-        return await wait_for_phase(operation(client), "remote_execution")
+        return await wait_for_phase(operation(client), operation_phase)
     finally:
         await client.disconnect()
 
 
-def _call_remote(config, timeout, operation):
+def _call_remote(
+    config,
+    timeout,
+    operation,
+    *,
+    operation_phase="remote_execution",
+):
     try:
-        return asyncio.run(_run_remote_operation(config, timeout, operation))
+        return asyncio.run(
+            _run_remote_operation(
+                config,
+                timeout,
+                operation,
+                operation_phase=operation_phase,
+            )
+        )
     except ProtocolVersionError as exc:
         raise ProtocolVersionFailure(str(exc)) from exc
     except ProtocolError as exc:
@@ -674,6 +700,106 @@ def get_command(ctx, config, timeout, max_output, expression):
     return {"value": _strict_json_value(value)}
 
 
+def _split_transfer_paths(paths, default_destination):
+    """Split transfer arguments into sources and their final destination."""
+    if len(paths) == 1:
+        return list(paths), default_destination
+    return list(paths[:-1]), paths[-1]
+
+
+def _validate_upload_sources(local_paths):
+    """Reject missing upload sources before opening a remote connection."""
+    for local_path in local_paths:
+        if not Path(local_path).exists():
+            raise LocalIOError(f"Local upload source does not exist: {local_path!r}")
+
+
+def _raise_transfer_error(error):
+    """Map transfer failures onto the stable CLI error model."""
+    if isinstance(
+        error,
+        (
+            asyncssh.DisconnectError,
+            asyncssh.SFTPConnectionLost,
+        ),
+    ):
+        raise ConnectionFailure(str(error)) from error
+    if isinstance(error, asyncssh.Error):
+        raise SFTPFailure(str(error)) from error
+    raise LocalIOError(str(error)) from error
+
+
+@cli.command("upload")
+@remote_options
+@click.argument(
+    "paths",
+    nargs=-1,
+    required=True,
+    metavar="LOCAL_PATH... [REMOTE_PATH]",
+)
+def upload_command(config, timeout, max_output, paths):
+    """Upload files and directories recursively over SFTP.
+
+    With one path, upload to the current remote SFTP directory. With multiple
+    paths, the last path is the remote destination.
+    """
+    del max_output
+    local_paths, remote_path = _split_transfer_paths(paths, ".")
+    _validate_upload_sources(local_paths)
+
+    async def operation(client):
+        try:
+            await client.upload(local_paths, remote_path)
+        except (asyncssh.Error, OSError, UnicodeError) as exc:
+            _raise_transfer_error(exc)
+
+    _call_remote(
+        config,
+        timeout,
+        operation,
+        operation_phase="transfer",
+    )
+    return {
+        "local_paths": local_paths,
+        "remote_path": remote_path,
+    }
+
+
+@cli.command("download")
+@remote_options
+@click.argument(
+    "paths",
+    nargs=-1,
+    required=True,
+    metavar="REMOTE_PATH... [LOCAL_PATH]",
+)
+def download_command(config, timeout, max_output, paths):
+    """Download files and directories recursively over SFTP.
+
+    With one path, download to the current local directory. With multiple
+    paths, the last path is the local destination.
+    """
+    del max_output
+    remote_paths, local_path = _split_transfer_paths(paths, ".")
+
+    async def operation(client):
+        try:
+            await client.download(remote_paths, local_path)
+        except (asyncssh.Error, OSError, UnicodeError) as exc:
+            _raise_transfer_error(exc)
+
+    _call_remote(
+        config,
+        timeout,
+        operation,
+        operation_phase="transfer",
+    )
+    return {
+        "remote_paths": remote_paths,
+        "local_path": local_path,
+    }
+
+
 __all__ = (
     "BoundedTextCollector",
     "CLIContext",
@@ -685,6 +811,7 @@ __all__ = (
     "MAX_MAX_OUTPUT",
     "PluginError",
     "RemoteOperationError",
+    "SFTPFailure",
     "OperationTimeout",
     "ProtocolVersionFailure",
     "RemoteExecutionFailure",
@@ -694,4 +821,6 @@ __all__ = (
     "load_connection_config",
     "remote_options",
     "run_command",
+    "download_command",
+    "upload_command",
 )

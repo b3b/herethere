@@ -48,7 +48,14 @@ def invoke_json(args):
     return result, json.loads(result.output)
 
 
-def install_fake_remote(monkeypatch, *, execute=None, get=None):
+def install_fake_remote(
+    monkeypatch,
+    *,
+    execute=None,
+    get=None,
+    upload=None,
+    download=None,
+):
     class FakeClient:
         async def execute(self, code, stdout=None, stderr=None):
             if execute is not None:
@@ -60,8 +67,22 @@ def install_fake_remote(monkeypatch, *, execute=None, get=None):
                 return get(expression)
             return 42
 
-    def call(config, timeout, operation):
+        async def upload(self, local_paths, remote_path):
+            if upload is not None:
+                return upload(local_paths, remote_path)
+            return None
+
+        async def download(self, remote_paths, local_path):
+            if download is not None:
+                return download(remote_paths, local_path)
+            return None
+
+    def call(config, timeout, operation, **kwargs):
         del config, timeout
+        assert kwargs.get("operation_phase", "remote_execution") in {
+            "remote_execution",
+            "transfer",
+        }
         return asyncio.run(operation(FakeClient()))
 
     monkeypatch.setattr(cli_module, "_call_remote", call)
@@ -874,6 +895,159 @@ def test_get_maps_remote_failure(monkeypatch):
     assert payload["error"]["remote_type"] == "NameError"
 
 
+@pytest.mark.parametrize(
+    ("args", "expected_local_paths", "expected_remote_path"),
+    [
+        (["tests/hello.txt"], ["tests/hello.txt"], "."),
+        (
+            ["tests/hello.txt", "tests/hello", "uploads"],
+            ["tests/hello.txt", "tests/hello"],
+            "uploads",
+        ),
+    ],
+)
+def test_upload_calls_client_and_returns_paths(
+    monkeypatch,
+    args,
+    expected_local_paths,
+    expected_remote_path,
+):
+    received = {}
+
+    def upload(local_paths, remote_path):
+        received.update(local_paths=local_paths, remote_path=remote_path)
+
+    install_fake_remote(monkeypatch, upload=upload)
+    result, payload = invoke_json(["upload", *args])
+
+    assert result.exit_code == ExitCode.SUCCESS
+    assert received == {
+        "local_paths": expected_local_paths,
+        "remote_path": expected_remote_path,
+    }
+    assert payload["local_paths"] == expected_local_paths
+    assert payload["remote_path"] == expected_remote_path
+
+
+@pytest.mark.parametrize(
+    ("args", "expected_remote_paths", "expected_local_path"),
+    [
+        (["result.csv"], ["result.csv"], "."),
+        (
+            ["result.csv", "remote_dir", "downloads"],
+            ["result.csv", "remote_dir"],
+            "downloads",
+        ),
+    ],
+)
+def test_download_calls_client_and_returns_paths(
+    monkeypatch,
+    args,
+    expected_remote_paths,
+    expected_local_path,
+):
+    received = {}
+
+    def download(remote_paths, local_path):
+        received.update(remote_paths=remote_paths, local_path=local_path)
+
+    install_fake_remote(monkeypatch, download=download)
+    result, payload = invoke_json(["download", *args])
+
+    assert result.exit_code == ExitCode.SUCCESS
+    assert received == {
+        "remote_paths": expected_remote_paths,
+        "local_path": expected_local_path,
+    }
+    assert payload["remote_paths"] == expected_remote_paths
+    assert payload["local_path"] == expected_local_path
+
+
+def test_upload_missing_local_source_is_local_io_error(monkeypatch, tmp_path):
+    missing = tmp_path / "missing.txt"
+
+    def fail(*args, **kwargs):
+        del args, kwargs
+        pytest.fail("remote operation called")
+
+    monkeypatch.setattr(cli_module, "_call_remote", fail)
+    result, payload = invoke_json(["upload", str(missing)])
+
+    assert result.exit_code == ExitCode.LOCAL_IO
+    assert payload["error"]["type"] == "LocalIOError"
+    assert str(missing) in payload["error"]["message"]
+
+
+@pytest.mark.parametrize(
+    ("command", "error", "exit_code", "error_type", "phase"),
+    [
+        (
+            "upload",
+            asyncssh.SFTPPermissionDenied("denied"),
+            ExitCode.REMOTE,
+            "SFTPError",
+            "transfer",
+        ),
+        (
+            "download",
+            asyncssh.SFTPNoSuchFile("missing"),
+            ExitCode.REMOTE,
+            "SFTPError",
+            "transfer",
+        ),
+        (
+            "download",
+            OSError("read-only destination"),
+            ExitCode.LOCAL_IO,
+            "LocalIOError",
+            "local",
+        ),
+        (
+            "download",
+            asyncssh.SFTPConnectionLost("lost"),
+            ExitCode.CONNECTION,
+            "ConnectionError",
+            "connection",
+        ),
+    ],
+)
+def test_transfer_errors_are_structured(
+    monkeypatch,
+    command,
+    error,
+    exit_code,
+    error_type,
+    phase,
+):
+    def fail(*args):
+        del args
+        raise error
+
+    kwargs = {command: fail}
+    install_fake_remote(monkeypatch, **kwargs)
+    paths = ["tests/hello.txt"] if command == "upload" else ["missing"]
+    result, payload = invoke_json([command, *paths])
+
+    assert result.exit_code == exit_code
+    assert payload["error"]["type"] == error_type
+    assert payload["error"]["phase"] == phase
+
+
+@pytest.mark.parametrize(
+    ("command", "usage"),
+    [
+        ("upload", "LOCAL_PATH... [REMOTE_PATH]"),
+        ("download", "REMOTE_PATH... [LOCAL_PATH]"),
+    ],
+)
+def test_transfer_help(command, usage):
+    result = CliRunner().invoke(cli, [command, "--help"])
+
+    assert result.exit_code == 0
+    assert usage in result.output
+    assert "recursively over SFTP" in result.output
+
+
 @pytest.mark.asyncio
 async def test_console_run_and_get_persist_live_namespace(
     server_instance, connection_config, tmp_path
@@ -917,3 +1091,67 @@ async def test_console_run_and_get_persist_live_namespace(
     assert run_payload["stdout"] == "ready\n"
     assert get_result.exit_code == 0
     assert get_payload["value"] == 42
+
+
+@pytest.mark.asyncio
+async def test_console_upload_and_download_files_and_directory(
+    server_instance,
+    server_config,
+    connection_config,
+    tmp_path,
+):
+    del server_instance
+    config = tmp_path / "there.env"
+    config.write_text(
+        f"THERE_HOST={connection_config.host}\n"
+        f"THERE_PORT={connection_config.port}\n"
+        f"THERE_USERNAME={connection_config.username}\n"
+        f"THERE_PASSWORD={connection_config.password}\n",
+        encoding="utf-8",
+    )
+    source_dir = tmp_path / "local-sources"
+    source_dir.mkdir()
+    local_file = source_dir / "hello.txt"
+    local_file.write_text("hello\n", encoding="utf-8")
+    local_dir = source_dir / "assets"
+    local_dir.mkdir()
+    (local_dir / "nested.txt").write_text("nested\n", encoding="utf-8")
+
+    upload_result = await asyncio.to_thread(
+        CliRunner().invoke,
+        cli,
+        [
+            "--json",
+            "upload",
+            "--config",
+            str(config),
+            str(local_file),
+            str(local_dir),
+            ".",
+        ],
+    )
+
+    assert upload_result.exit_code == 0
+    assert (Path(server_config.sftp_root) / "hello.txt").read_text() == "hello\n"
+    uploaded_nested = Path(server_config.sftp_root) / "assets/nested.txt"
+    assert uploaded_nested.read_text() == "nested\n"
+
+    download_dir = tmp_path / "downloads"
+    download_dir.mkdir()
+    download_result = await asyncio.to_thread(
+        CliRunner().invoke,
+        cli,
+        [
+            "--json",
+            "download",
+            "--config",
+            str(config),
+            "hello.txt",
+            "assets",
+            str(download_dir),
+        ],
+    )
+
+    assert download_result.exit_code == 0
+    assert (download_dir / "hello.txt").read_text() == "hello\n"
+    assert (download_dir / "assets/nested.txt").read_text() == "nested\n"
