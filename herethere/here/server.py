@@ -2,6 +2,8 @@
 
 import asyncio
 import inspect
+import json
+import logging
 import os
 import subprocess
 import threading
@@ -21,6 +23,13 @@ from herethere.everywhere.live import (
 )
 from herethere.everywhere.logging import logger
 from herethere.everywhere.protocol import EventStream, write_event
+from herethere.everywhere.recent_logs import (
+    DEFAULT_MAX_LOG_RECORDS,
+    RECENT_LOGS_COMMAND,
+    RECENT_LOGS_PROTOCOL_VERSION,
+    RecentLogHandler,
+    create_recent_log_handler,
+)
 from herethere.everywhere.redirected_output import redirect_output
 from herethere.everywhere.values import dumps_error, dumps_value
 from herethere.here.config import ServerConfig
@@ -113,7 +122,53 @@ async def handle_execute_command(process: asyncssh.SSHServerProcess, namespace: 
     write_event(process.stdout, event)
 
 
-async def handle_client(process: asyncssh.SSHServerProcess, namespace: dict):
+async def handle_recent_logs_command(
+    process: asyncssh.SSHServerProcess,
+    namespace: dict,
+    recent_logs: RecentLogHandler,
+):
+    """Return a finite snapshot of buffered Python log records."""
+    request_text = await process.stdin.read(MAX_COMMAND_LENGTH)
+    try:
+        max_records = _decode_recent_logs_request(request_text)
+    except ValueError as exc:
+        process.stderr.write(f"Invalid recent-logs request: {exc}")
+        return
+    write_event(process.stdout, recent_logs.snapshot(max_records).asdict())
+
+
+def _decode_recent_logs_request(request_text: str) -> int | None:
+    """Decode an optional recent-log snapshot request."""
+    if not request_text:
+        return None
+    try:
+        request = json.loads(request_text)
+    except json.JSONDecodeError as exc:
+        raise ValueError("request must be valid JSON") from exc
+    if (
+        not isinstance(request, dict)
+        or request.get("version") != RECENT_LOGS_PROTOCOL_VERSION
+    ):
+        raise ValueError(
+            f"request must use protocol version {RECENT_LOGS_PROTOCOL_VERSION}"
+        )
+    max_records = request.get("records")
+    if max_records is None:
+        return None
+    if (
+        not isinstance(max_records, int)
+        or isinstance(max_records, bool)
+        or not 1 <= max_records <= DEFAULT_MAX_LOG_RECORDS
+    ):
+        raise ValueError(f"records must be in the range 1..{DEFAULT_MAX_LOG_RECORDS}")
+    return max_records
+
+
+async def handle_client(
+    process: asyncssh.SSHServerProcess,
+    namespace: dict,
+    recent_logs: RecentLogHandler | None = None,
+):
     """SSH requests handler."""
 
     if namespace is None:
@@ -132,14 +187,20 @@ async def handle_client(process: asyncssh.SSHServerProcess, namespace: dict):
         stdin_channel.set_line_mode(True)
 
     try:
-        processor = {
+        processors = {
             "ping": handle_ping_command,
             "code": handle_code_command,
             "background": handle_background_code_command,
             "shell": handle_shell_command,
             "value": handle_value_command,
             PROTOCOL_EXECUTE_COMMAND: handle_execute_command,
-        }[process.command]
+        }
+        if recent_logs is not None:
+            processors[RECENT_LOGS_COMMAND] = partial(
+                handle_recent_logs_command,
+                recent_logs=recent_logs,
+            )
+        processor = processors[process.command]
     except KeyError:
         logger.error("Unknown command: %s", process.command[:64])
         process.stderr.write("Unknown command")
@@ -224,10 +285,13 @@ class RunningServer:
         namespace,
         executor: ThreadPoolExecutor,
         connections: set[asyncssh.SSHServerConnection],
+        recent_logs: RecentLogHandler | None = None,
     ):
         self.server = server
         self.executor = executor
         self.connections = connections
+        self.recent_logs = recent_logs
+        self._recent_logs_attached = recent_logs is not None
         self.namespace = namespace
         self.namespace["ssh_server_closed"] = threading.Event()
 
@@ -298,6 +362,10 @@ class RunningServer:
     async def stop(self, timeout: float = CONNECTION_CLOSE_TIMEOUT):
         """Stop SSH server."""
         self.namespace["ssh_server_closed"].set()
+        if self._recent_logs_attached and self.recent_logs is not None:
+            logging.getLogger().removeHandler(self.recent_logs)
+            self.recent_logs.close()
+            self._recent_logs_attached = False
         self.server.close()
         await self._close_connections(timeout)
 
@@ -343,6 +411,9 @@ async def start_server(
         max_workers=64, thread_name_prefix="SSHServerHereThread"
     )
     connections: set[asyncssh.SSHServerConnection] = set()
+    recent_logs = create_recent_log_handler()
+    root_logger = logging.getLogger()
+    root_logger.addHandler(recent_logs)
 
     logger.debug(
         "start_server host=%s port=%s sftp_root=%s",
@@ -350,25 +421,36 @@ async def start_server(
         config.port,
         config.sftp_root,
     )
-    server = await asyncssh.create_server(
-        host=config.host,
-        port=config.port,
-        server_host_keys=[config.key_path],
-        server_factory=partial(
-            server_factory,
-            username=config.username,
-            password=config.password,
-            executor=executor,
-            connections=connections,
-        ),
-        process_factory=partial(handle_client, namespace=namespace),
-        sftp_factory=config.sftp_root
-        and partial(SFTPServerHere, chroot=config.sftp_root),
-        reuse_address=True,
-    )
+    try:
+        server = await asyncssh.create_server(
+            host=config.host,
+            port=config.port,
+            server_host_keys=[config.key_path],
+            server_factory=partial(
+                server_factory,
+                username=config.username,
+                password=config.password,
+                executor=executor,
+                connections=connections,
+            ),
+            process_factory=partial(
+                handle_client,
+                namespace=namespace,
+                recent_logs=recent_logs,
+            ),
+            sftp_factory=config.sftp_root
+            and partial(SFTPServerHere, chroot=config.sftp_root),
+            reuse_address=True,
+        )
+    except Exception:
+        root_logger.removeHandler(recent_logs)
+        recent_logs.close()
+        executor.shutdown(wait=False)
+        raise
     return RunningServer(
         server=server,
         namespace=namespace,
         executor=executor,
         connections=connections,
+        recent_logs=recent_logs,
     )

@@ -12,6 +12,7 @@ import pytest
 from click.testing import CliRunner
 
 from herethere.everywhere.config import ConnectionConfig, ConnectionConfigError
+from herethere.everywhere.recent_logs import RecentLogsSnapshot
 from herethere.there import cli as cli_module
 from herethere.there.cli import (
     MAX_MAX_OUTPUT,
@@ -55,6 +56,7 @@ def install_fake_remote(
     get=None,
     upload=None,
     download=None,
+    logs=None,
 ):
     class FakeClient:
         async def execute(self, code, stdout=None, stderr=None):
@@ -77,9 +79,20 @@ def install_fake_remote(
                 return download(remote_paths, local_path)
             return None
 
+        async def logs(self, max_records=None):
+            if logs is not None:
+                return logs(max_records)
+            return RecentLogsSnapshot(
+                text="",
+                bytes=0,
+                records=0,
+                truncated=False,
+            )
+
     def call(config, timeout, operation, **kwargs):
         del config, timeout
         assert kwargs.get("operation_phase", "remote_execution") in {
+            "log_retrieval",
             "remote_execution",
             "transfer",
         }
@@ -1155,3 +1168,178 @@ async def test_console_upload_and_download_files_and_directory(
     assert download_result.exit_code == 0
     assert (download_dir / "hello.txt").read_text() == "hello\n"
     assert (download_dir / "assets/nested.txt").read_text() == "nested\n"
+
+
+def test_logs_json_returns_structured_snapshot(monkeypatch):
+    install_fake_remote(
+        monkeypatch,
+        logs=lambda max_records: RecentLogsSnapshot(
+            text="first\nsecond\n",
+            bytes=13,
+            records=2,
+            truncated=False,
+        ),
+    )
+
+    result, payload = invoke_json(["logs"])
+
+    assert result.exit_code == ExitCode.SUCCESS
+    assert payload["stdout"] == ""
+    assert payload["stderr"] == ""
+    assert payload["text"] == "first\nsecond\n"
+    assert payload["bytes"] == 13
+    assert payload["records"] == 2
+    assert payload["truncated"] is False
+    assert payload["server_truncated"] is False
+
+
+def test_logs_applies_cli_tail_limit_and_preserves_server_byte_count(monkeypatch):
+    install_fake_remote(
+        monkeypatch,
+        logs=lambda max_records: RecentLogsSnapshot(
+            text="1234€",
+            bytes=7,
+            records=1,
+            truncated=False,
+        ),
+    )
+
+    _, payload = invoke_json(["logs", "--max-output", "2"])
+
+    assert payload["text"] == "��"
+    assert payload["bytes"] == 7
+    assert payload["truncated"] is True
+    assert payload["server_truncated"] is False
+
+
+def test_logs_reports_server_eviction(monkeypatch):
+    install_fake_remote(
+        monkeypatch,
+        logs=lambda max_records: RecentLogsSnapshot(
+            text="latest\n",
+            bytes=7,
+            records=1,
+            truncated=True,
+        ),
+    )
+
+    _, payload = invoke_json(["logs"])
+
+    assert payload["text"] == "latest\n"
+    assert payload["truncated"] is True
+    assert payload["server_truncated"] is True
+
+
+def test_logs_empty_buffer(monkeypatch):
+    install_fake_remote(monkeypatch)
+
+    result, payload = invoke_json(["logs"])
+
+    assert result.exit_code == ExitCode.SUCCESS
+    assert payload["text"] == ""
+    assert payload["bytes"] == 0
+    assert payload["truncated"] is False
+
+
+def test_logs_passes_requested_record_count_to_client(monkeypatch):
+    received = {}
+
+    def logs(max_records):
+        received["max_records"] = max_records
+        return RecentLogsSnapshot(
+            text="second\nthird\n",
+            bytes=13,
+            records=2,
+            truncated=False,
+        )
+
+    install_fake_remote(monkeypatch, logs=logs)
+
+    result, payload = invoke_json(["logs", "--records", "2"])
+
+    assert result.exit_code == ExitCode.SUCCESS
+    assert received["max_records"] == 2
+    assert payload["records"] == 2
+
+
+@pytest.mark.parametrize("records", ["0", "1001", "invalid"])
+def test_logs_validates_requested_record_count(records):
+    result, payload = invoke_json(["logs", "--records", records])
+
+    assert result.exit_code == ExitCode.USAGE
+    assert "--records" in payload["error"]["message"]
+
+
+def test_logs_text_mode_prints_only_snapshot(monkeypatch):
+    install_fake_remote(
+        monkeypatch,
+        logs=lambda max_records: RecentLogsSnapshot(
+            text="warning\n",
+            bytes=8,
+            records=1,
+            truncated=False,
+        ),
+    )
+
+    result = CliRunner().invoke(cli, ["logs"])
+
+    assert result.exit_code == ExitCode.SUCCESS
+    assert result.output == "warning\n"
+
+
+def test_logs_protocol_error_uses_retrieval_phase(monkeypatch):
+    def fail(awaitable):
+        awaitable.close()
+        raise cli_module.ProtocolError("bad logs")
+
+    monkeypatch.setattr(cli_module.asyncio, "run", fail)
+
+    result, payload = invoke_json(["logs"])
+
+    assert result.exit_code == ExitCode.REMOTE
+    assert payload["error"]["phase"] == "log_retrieval"
+
+
+@pytest.mark.asyncio
+@pytest.mark.usefixtures("server_instance")
+async def test_console_logs_diagnose_code_before_remote_failure(
+    connection_config,
+    tmp_path,
+):
+    config = tmp_path / "there.env"
+    config.write_text(
+        f"THERE_HOST={connection_config.host}\n"
+        f"THERE_PORT={connection_config.port}\n"
+        f"THERE_USERNAME={connection_config.username}\n"
+        f"THERE_PASSWORD={connection_config.password}\n",
+        encoding="utf-8",
+    )
+    marker = "diagnostic-before-failure"
+
+    run_result = await asyncio.to_thread(
+        CliRunner().invoke,
+        cli,
+        [
+            "--json",
+            "run",
+            "--config",
+            str(config),
+            "--code",
+            (
+                "import logging\n"
+                f"logging.warning({marker!r})\n"
+                "raise RuntimeError('failed')"
+            ),
+        ],
+    )
+    logs_result = await asyncio.to_thread(
+        CliRunner().invoke,
+        cli,
+        ["--json", "logs", "--config", str(config)],
+    )
+
+    assert run_result.exit_code == ExitCode.REMOTE
+    assert logs_result.exit_code == ExitCode.SUCCESS
+    payload = json.loads(logs_result.output)
+    assert marker in payload["text"]
+    assert payload["bytes"] == len(payload["text"].encode("utf-8"))

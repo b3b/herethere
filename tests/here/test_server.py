@@ -1,14 +1,26 @@
 import asyncio
 import contextlib
 import json
+import logging
 import os
 from pathlib import Path
 
 import asyncssh
 import pytest
 
+from herethere.everywhere.recent_logs import (
+    RECENT_LOGS_COMMAND,
+    RECENT_LOGS_PROTOCOL_VERSION,
+    RECENT_LOGS_RESPONSE_TYPE,
+    create_recent_log_handler,
+)
 from herethere.everywhere.values import RemoteValueError, loads_value
-from herethere.here.server import RunningServer, SSHServerHere, start_server
+from herethere.here.server import (
+    RunningServer,
+    SSHServerHere,
+    _decode_recent_logs_request,
+    start_server,
+)
 
 
 @pytest.mark.asyncio
@@ -21,6 +33,31 @@ async def test_server_is_serving(server_instance):
 async def test_client_connected(server_instance, connection_config):
     async with asyncssh.connect(**connection_config.asdict, known_hosts=None):
         pass
+
+
+@pytest.mark.asyncio
+async def test_start_server_cleans_up_recent_logs_when_listener_fails(
+    mocker, server_config
+):
+    handler = create_recent_log_handler()
+    close = mocker.spy(handler, "close")
+    executor = mocker.Mock()
+    mocker.patch(
+        "herethere.here.server.create_recent_log_handler",
+        return_value=handler,
+    )
+    mocker.patch("herethere.here.server.ThreadPoolExecutor", return_value=executor)
+    mocker.patch(
+        "herethere.here.server.asyncssh.create_server",
+        new=mocker.AsyncMock(side_effect=OSError("bind failed")),
+    )
+
+    with pytest.raises(OSError, match="bind failed"):
+        await start_server(server_config)
+
+    assert handler not in logging.getLogger().handlers
+    close.assert_called_once_with()
+    executor.shutdown.assert_called_once_with(wait=False)
 
 
 @pytest.mark.asyncio
@@ -527,6 +564,87 @@ async def test_structured_execute_reports_remote_exception(
 
 
 @pytest.mark.asyncio
+async def test_recent_logs_command_returns_ordered_snapshot(
+    server_instance, connection_config
+):
+    marker_one = "recent-log-one"
+    marker_two = "recent-log-two"
+    async with asyncssh.connect(**connection_config.asdict, known_hosts=None) as conn:
+        await conn.run(
+            "execute-v1",
+            check=True,
+            input=(
+                "import logging\n"
+                f"logging.warning({marker_one!r})\n"
+                f"logging.error({marker_two!r})\n"
+            ),
+        )
+        result = await conn.run(
+            RECENT_LOGS_COMMAND,
+            check=True,
+            input='{"version":1,"records":null}',
+        )
+        limited_result = await conn.run(
+            RECENT_LOGS_COMMAND,
+            check=True,
+            input='{"version":1,"records":1}',
+        )
+
+    event = json.loads(result.stdout)
+    assert event["type"] == RECENT_LOGS_RESPONSE_TYPE
+    assert event["version"] == RECENT_LOGS_PROTOCOL_VERSION
+    assert event["text"].index(marker_one) < event["text"].index(marker_two)
+    assert event["bytes"] == len(event["text"].encode("utf-8"))
+    assert event["records"] >= 2
+    assert event["truncated"] is False
+    assert result.stderr == ""
+    limited_event = json.loads(limited_result.stdout)
+    assert marker_one not in limited_event["text"]
+    assert marker_two in limited_event["text"]
+    assert limited_event["records"] == 1
+
+
+@pytest.mark.parametrize(
+    ("request_text", "expected"),
+    [
+        ("", None),
+        ('{"version":1}', None),
+        ('{"version":1,"records":2}', 2),
+    ],
+)
+def test_decode_recent_logs_request(request_text, expected):
+    assert _decode_recent_logs_request(request_text) == expected
+
+
+@pytest.mark.parametrize(
+    "request_text",
+    [
+        "{",
+        "[]",
+        '{"version":2}',
+        '{"version":1,"records":"1"}',
+        '{"version":1,"records":true}',
+        '{"version":1,"records":0}',
+        '{"version":1,"records":1001}',
+    ],
+)
+def test_decode_recent_logs_request_rejects_invalid_input(request_text):
+    with pytest.raises(ValueError):
+        _decode_recent_logs_request(request_text)
+
+
+@pytest.mark.asyncio
+async def test_recent_logs_command_rejects_invalid_request(
+    server_instance, connection_config
+):
+    async with asyncssh.connect(**connection_config.asdict, known_hosts=None) as conn:
+        result = await conn.run(RECENT_LOGS_COMMAND, input="{", check=True)
+
+    assert result.stdout == ""
+    assert "Invalid recent-logs request" in result.stderr
+
+
+@pytest.mark.asyncio
 async def test_sftp_file_uploaded(
     server_config, server_instance, client_instance, tmpdir
 ):
@@ -566,9 +684,15 @@ class CustomSSHServerHere(SSHServerHere):
 async def test_custom_server_class_used(server_config, connection_config):
     assert not CustomSSHServerHere.test_events
 
-    await start_server(server_config, server_factory=CustomSSHServerHere)
-    async with asyncssh.connect(**connection_config.asdict, known_hosts=None):
-        pass
+    server_instance = await start_server(
+        server_config,
+        server_factory=CustomSSHServerHere,
+    )
+    try:
+        async with asyncssh.connect(**connection_config.asdict, known_hosts=None):
+            pass
+    finally:
+        await server_instance.stop()
 
     assert CustomSSHServerHere.test_events == ["connection_made"]
 

@@ -17,6 +17,7 @@ import asyncssh
 import click
 
 from herethere.everywhere.config import ConnectionConfig, ConnectionConfigError
+from herethere.everywhere.recent_logs import DEFAULT_MAX_LOG_RECORDS
 from herethere.everywhere.values import RemoteValueError
 from herethere.there.client import (
     Client,
@@ -636,9 +637,9 @@ def _call_remote(
             )
         )
     except ProtocolVersionError as exc:
-        raise ProtocolVersionFailure(str(exc)) from exc
+        raise ProtocolVersionFailure(str(exc), phase=operation_phase) from exc
     except ProtocolError as exc:
-        raise RemoteOperationError(str(exc), phase="remote_execution") from exc
+        raise RemoteOperationError(str(exc), phase=operation_phase) from exc
     except RemoteValueError as exc:
         raise RemoteExecutionFailure(
             RemoteError(
@@ -698,6 +699,43 @@ def get_command(ctx, config, timeout, max_output, expression):
         click.echo(repr(value))
         return None
     return {"value": _strict_json_value(value)}
+
+
+@cli.command("logs")
+@remote_options
+@click.option(
+    "--records",
+    type=click.IntRange(1, DEFAULT_MAX_LOG_RECORDS),
+    help="Return at most this many newest log records.",
+)
+@click.pass_context
+def logs_command(ctx, config, timeout, max_output, records):
+    """Return a finite snapshot of recent remote Python logs."""
+
+    async def operation(client):
+        return await client.logs(max_records=records)
+
+    snapshot = _call_remote(
+        config,
+        timeout,
+        operation,
+        operation_phase="log_retrieval",
+    )
+    collector = BoundedTextCollector(max_output)
+    collector.write(snapshot.text)
+    text = collector.getvalue()
+    truncated = snapshot.truncated or collector.truncated
+
+    if ctx.find_root().obj.output_format == "text":
+        click.echo(text, nl=False)
+        return None
+    return {
+        "text": text,
+        "bytes": snapshot.bytes,
+        "records": snapshot.records,
+        "truncated": truncated,
+        "server_truncated": snapshot.truncated,
+    }
 
 
 def _split_transfer_paths(paths, default_destination):
@@ -818,6 +856,7 @@ __all__ = (
     "ValueSerializationFailure",
     "cli",
     "get_command",
+    "logs_command",
     "load_connection_config",
     "remote_options",
     "run_command",

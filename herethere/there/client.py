@@ -15,6 +15,13 @@ import asyncssh
 from herethere.everywhere.config import ConnectionConfig
 from herethere.everywhere.live import PROTOCOL_EXECUTE_COMMAND
 from herethere.everywhere.logging import logger
+from herethere.everywhere.recent_logs import (
+    DEFAULT_MAX_LOG_RECORDS,
+    RECENT_LOGS_COMMAND,
+    RECENT_LOGS_PROTOCOL_VERSION,
+    RECENT_LOGS_RESPONSE_TYPE,
+    RecentLogsSnapshot,
+)
 from herethere.everywhere.values import loads_value
 
 
@@ -178,6 +185,54 @@ class Client:
     async def get(self, expression: str):
         """Evaluate a Python expression remotely and return its Python value."""
         return await self._get_value(expression)
+
+    async def logs(self, max_records: int | None = None) -> RecentLogsSnapshot:
+        """Return a finite snapshot of recent remote Python log records."""
+        if max_records is not None and (
+            not isinstance(max_records, int)
+            or isinstance(max_records, bool)
+            or not 1 <= max_records <= DEFAULT_MAX_LOG_RECORDS
+        ):
+            raise ValueError(
+                f"max_records must be in the range 1..{DEFAULT_MAX_LOG_RECORDS}"
+            )
+        request = json.dumps(
+            {
+                "version": RECENT_LOGS_PROTOCOL_VERSION,
+                "records": max_records,
+            },
+            separators=(",", ":"),
+        )
+        async with self.connection as ssh:
+            async with ssh.create_process(RECENT_LOGS_COMMAND) as process:
+                process.stdin.write(request)
+                process.stdin.write_eof()
+                try:
+                    message, diagnostic = await asyncio.gather(
+                        process.stdout.read(),
+                        process.stderr.read(),
+                    )
+                    await process.wait()
+                except asyncio.CancelledError:
+                    process.terminate()
+                    with contextlib.suppress(Exception):
+                        await asyncio.wait_for(process.wait(), timeout=1)
+                    raise
+
+        if not message:
+            if "Unknown command" in diagnostic:
+                raise _logs_protocol_version_error()
+            detail = f" Remote stderr: {diagnostic}" if diagnostic else ""
+            raise ProtocolError(f"Remote logs command returned no output.{detail}")
+        if diagnostic:
+            raise ProtocolError(f"Remote logs command failed: {diagnostic}")
+        try:
+            event = json.loads(message)
+        except (TypeError, json.JSONDecodeError) as exc:
+            raise ProtocolError(
+                "Remote server returned malformed recent-log data."
+            ) from exc
+        return _recent_logs_snapshot(event)
 
     async def _get_value(self, expression: str):
         """Run the legacy value command shared with compatibility fallback."""
@@ -377,6 +432,51 @@ def _protocol_version_error() -> ProtocolVersionError:
     return ProtocolVersionError(
         "The remote server does not support structured live execution. "
         "Upgrade herethere on the remote server."
+    )
+
+
+def _logs_protocol_version_error() -> ProtocolVersionError:
+    return ProtocolVersionError(
+        "The remote server does not support recent-log snapshots. "
+        "Upgrade herethere on the remote server."
+    )
+
+
+def _recent_logs_snapshot(event: object) -> RecentLogsSnapshot:
+    """Validate and decode a recent-log protocol response."""
+    if (
+        not isinstance(event, dict)
+        or event.get("type") != RECENT_LOGS_RESPONSE_TYPE
+        or event.get("version") != RECENT_LOGS_PROTOCOL_VERSION
+    ):
+        raise ProtocolError("Remote server returned invalid recent-log data.")
+    text = event.get("text")
+    byte_count = event.get("bytes")
+    record_count = event.get("records")
+    truncated = event.get("truncated")
+    if not isinstance(text, str):
+        raise ProtocolError("Remote server returned invalid recent-log fields.")
+    if (
+        not isinstance(byte_count, int)
+        or isinstance(byte_count, bool)
+        or byte_count < 0
+    ):
+        raise ProtocolError("Remote server returned invalid recent-log fields.")
+    if not isinstance(truncated, bool):
+        raise ProtocolError("Remote server returned invalid recent-log fields.")
+    if (
+        not isinstance(record_count, int)
+        or isinstance(record_count, bool)
+        or record_count < 0
+    ):
+        raise ProtocolError("Remote server returned invalid recent-log fields.")
+    if byte_count != len(text.encode("utf-8")):
+        raise ProtocolError("Remote server returned invalid recent-log fields.")
+    return RecentLogsSnapshot(
+        text=text,
+        bytes=byte_count,
+        records=record_count,
+        truncated=truncated,
     )
 
 

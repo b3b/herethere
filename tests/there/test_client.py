@@ -1,4 +1,5 @@
 import asyncio
+import json
 from contextlib import redirect_stdout
 from io import StringIO
 from pathlib import Path
@@ -6,6 +7,7 @@ from pathlib import Path
 import asyncssh
 import pytest
 
+from herethere.everywhere.recent_logs import RECENT_LOGS_COMMAND
 from herethere.everywhere.values import RemoteValueError, dumps_error, dumps_value
 from herethere.there.client import (
     Client,
@@ -630,6 +632,210 @@ async def test_structured_client_cancellation_terminates_process(mocker):
     client.connection = FakeConnectionContext(process)
 
     task = asyncio.create_task(client.execute("pass"))
+    await asyncio.sleep(0)
+    task.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    process.terminate.assert_called_once_with()
+    process.wait.assert_awaited_once_with()
+
+
+@pytest.mark.asyncio
+async def test_logs_decodes_finite_snapshot(mocker):
+    process = protocol_process(
+        mocker,
+        [
+            '{"type":"recent-logs","version":1,"text":"one\\ntwo\\n",'
+            '"bytes":8,"records":2,"truncated":false}\n'
+        ],
+    )
+    client = Client()
+    client.connection = FakeConnectionContext(process)
+
+    snapshot = await client.logs()
+
+    assert process.command == RECENT_LOGS_COMMAND
+    process.stdin.write.assert_called_once_with('{"version":1,"records":null}')
+    process.stdin.write_eof.assert_called_once_with()
+    assert snapshot.text == "one\ntwo\n"
+    assert snapshot.bytes == 8
+    assert snapshot.records == 2
+    assert snapshot.truncated is False
+
+
+@pytest.mark.asyncio
+async def test_logs_requests_newest_record_count(mocker):
+    process = protocol_process(
+        mocker,
+        [
+            '{"type":"recent-logs","version":1,"text":"two\\n",'
+            '"bytes":4,"records":1,"truncated":false}\n'
+        ],
+    )
+    client = Client()
+    client.connection = FakeConnectionContext(process)
+
+    snapshot = await client.logs(max_records=1)
+
+    process.stdin.write.assert_called_once_with('{"version":1,"records":1}')
+    assert snapshot.records == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("max_records", [0, 1001, True, "1"])
+async def test_logs_validates_requested_record_count(max_records):
+    client = Client()
+
+    with pytest.raises(ValueError, match="range 1..1000"):
+        await client.logs(max_records=max_records)
+
+
+@pytest.mark.asyncio
+async def test_logs_detects_old_server(mocker):
+    process = protocol_process(mocker, [], "Unknown command")
+    client = Client()
+    client.connection = FakeConnectionContext(process)
+
+    with pytest.raises(ProtocolVersionError, match="recent-log snapshots"):
+        await client.logs()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("stdout", "stderr", "message"),
+    [
+        ([], "", "no output"),
+        ([], "remote failure", "Remote stderr"),
+        (["not-json"], "", "malformed"),
+        (["null"], "", "invalid recent-log data"),
+        (['{"type":"other"}'], "", "invalid recent-log data"),
+        (
+            ['{"type":"recent-logs","version":2}'],
+            "",
+            "invalid recent-log data",
+        ),
+        (
+            [
+                '{"type":"recent-logs","version":1,"text":"","bytes":0,'
+                '"records":0,"truncated":false}'
+            ],
+            "diagnostic",
+            "logs command failed",
+        ),
+    ],
+)
+async def test_logs_rejects_remote_failures(mocker, stdout, stderr, message):
+    process = protocol_process(mocker, stdout, stderr)
+    client = Client()
+    client.connection = FakeConnectionContext(process)
+
+    with pytest.raises(ProtocolError, match=message):
+        await client.logs()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "event",
+    [
+        {
+            "type": "recent-logs",
+            "version": 1,
+            "text": 1,
+            "bytes": 0,
+            "records": 0,
+            "truncated": False,
+        },
+        {
+            "type": "recent-logs",
+            "version": 1,
+            "text": "",
+            "bytes": "",
+            "records": 0,
+            "truncated": False,
+        },
+        {
+            "type": "recent-logs",
+            "version": 1,
+            "text": "",
+            "bytes": True,
+            "records": 0,
+            "truncated": False,
+        },
+        {
+            "type": "recent-logs",
+            "version": 1,
+            "text": "",
+            "bytes": -1,
+            "records": 0,
+            "truncated": False,
+        },
+        {
+            "type": "recent-logs",
+            "version": 1,
+            "text": "",
+            "bytes": 0,
+            "records": 0,
+            "truncated": 0,
+        },
+        {
+            "type": "recent-logs",
+            "version": 1,
+            "text": "x",
+            "bytes": 0,
+            "records": 0,
+            "truncated": False,
+        },
+        {
+            "type": "recent-logs",
+            "version": 1,
+            "text": "",
+            "bytes": 0,
+            "records": "",
+            "truncated": False,
+        },
+        {
+            "type": "recent-logs",
+            "version": 1,
+            "text": "",
+            "bytes": 0,
+            "records": True,
+            "truncated": False,
+        },
+        {
+            "type": "recent-logs",
+            "version": 1,
+            "text": "",
+            "bytes": 0,
+            "records": -1,
+            "truncated": False,
+        },
+    ],
+)
+async def test_logs_rejects_invalid_fields(mocker, event):
+    process = protocol_process(mocker, [json.dumps(event)])
+    client = Client()
+    client.connection = FakeConnectionContext(process)
+
+    with pytest.raises(ProtocolError, match="invalid recent-log fields"):
+        await client.logs()
+
+
+@pytest.mark.asyncio
+async def test_logs_cancellation_terminates_process(mocker):
+    class BlockingReader:
+        async def read(self):
+            await asyncio.Event().wait()
+
+    process = mocker.Mock()
+    process.stdin = mocker.Mock()
+    process.stdout = BlockingReader()
+    process.stderr = BlockingReader()
+    process.wait = mocker.AsyncMock()
+    client = Client()
+    client.connection = FakeConnectionContext(process)
+
+    task = asyncio.create_task(client.logs())
     await asyncio.sleep(0)
     task.cancel()
 
