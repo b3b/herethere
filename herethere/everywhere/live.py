@@ -6,7 +6,6 @@ from typing import Any, TextIO
 
 from herethere.everywhere.redirected_output import redirect_output
 
-PROTOCOL_EXECUTE_COMMAND = "execute-v1"
 MAX_TRACEBACK_BYTES = 64 * 1024
 
 

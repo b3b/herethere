@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import binascii
+import codecs
 import contextlib
 import json
 import sys
@@ -12,15 +15,29 @@ from typing import TextIO
 
 import asyncssh
 
+from herethere.everywhere.commands import (
+    BACKGROUND_COMMAND,
+    CODE_COMMAND,
+    EXECUTE_COMMAND,
+    PING_COMMAND,
+    RECENT_LOGS_COMMAND,
+    SHELL_COMMAND,
+    VALUE_COMMAND,
+)
 from herethere.everywhere.config import ConnectionConfig
-from herethere.everywhere.live import PROTOCOL_EXECUTE_COMMAND
 from herethere.everywhere.logging import logger
 from herethere.everywhere.recent_logs import (
     DEFAULT_MAX_LOG_RECORDS,
-    RECENT_LOGS_COMMAND,
     RECENT_LOGS_PROTOCOL_VERSION,
     RECENT_LOGS_RESPONSE_TYPE,
     RecentLogsSnapshot,
+)
+from herethere.everywhere.shell import (
+    MAX_SHELL_COMMAND_BYTES,
+    SHELL_PROTOCOL_VERSION,
+    SHELL_RESULT_EVENT,
+    SHELL_STREAM_EVENT,
+    ShellResult,
 )
 from herethere.everywhere.values import loads_value
 
@@ -74,6 +91,36 @@ def _forward_stream_event(
         writer.flush()
 
 
+class _ShellOutput:
+    """Forward raw shell bytes to bounded or ordinary text writers."""
+
+    def __init__(self, writer: TextIO):
+        self.writer = writer
+        self.decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+
+    def write(self, data: bytes) -> None:
+        """Write bytes without losing byte counts in bounded collectors."""
+        write_bytes = getattr(self.writer, "write_bytes", None)
+        if write_bytes is not None:
+            write_bytes(data)
+        else:
+            text = self.decoder.decode(data)
+            if text:
+                self.writer.write(text)
+        if hasattr(self.writer, "flush"):
+            self.writer.flush()
+
+    def finish(self) -> None:
+        """Flush a trailing partial UTF-8 sequence to an ordinary writer."""
+        if getattr(self.writer, "write_bytes", None) is not None:
+            return
+        text = self.decoder.decode(b"", final=True)
+        if text:
+            self.writer.write(text)
+        if hasattr(self.writer, "flush"):
+            self.writer.flush()
+
+
 class PersistentConnection(AbstractAsyncContextManager):
     """SSH connection async context manager with automatic reconnection."""
 
@@ -114,7 +161,7 @@ class PersistentConnection(AbstractAsyncContextManager):
         """Check connection is active."""
         if self.connection:
             try:
-                await self.connection.run("ping", check=True)
+                await self.connection.run(PING_COMMAND, check=True)
             except asyncssh.Error:
                 logger.debug("SSH connection ping failed.")
             else:
@@ -162,7 +209,7 @@ class Client:
         try:
             await self.execute(code, stdout, stderr)
         except ProtocolVersionError:
-            await self._execute_code("code", code, stdout, stderr)
+            await self._execute_code(CODE_COMMAND, code, stdout, stderr)
 
     async def runcode_background(
         self,
@@ -171,7 +218,7 @@ class Client:
         stderr: TextIO | None = None,
     ) -> str:
         """Execute Python code in a separate thread on the remote side."""
-        await self._execute_code("background", code, stdout, stderr)
+        await self._execute_code(BACKGROUND_COMMAND, code, stdout, stderr)
 
     async def shell(
         self,
@@ -180,7 +227,35 @@ class Client:
         stderr: TextIO | None = None,
     ) -> str:
         """Execute shell command on the remote side."""
-        await self._execute_code("shell", code, stdout, stderr)
+        output = stdout or sys.stdout
+        await self.execute_shell(code, stdout=output, stderr=output)
+
+    async def execute_shell(
+        self,
+        command: str,
+        stdout: TextIO | None = None,
+        stderr: TextIO | None = None,
+    ) -> ShellResult:
+        """Execute a shell command with structured streams and status."""
+        command_bytes = len(command.encode("utf-8"))
+        if not command or command_bytes > MAX_SHELL_COMMAND_BYTES:
+            raise ValueError(
+                f"command must contain 1..{MAX_SHELL_COMMAND_BYTES} UTF-8 bytes"
+            )
+        request = json.dumps(
+            {
+                "version": SHELL_PROTOCOL_VERSION,
+                "command": command,
+            },
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+        event = await self._shell_operation(
+            request,
+            stdout=stdout,
+            stderr=stderr,
+        )
+        return _shell_result(event)
 
     async def get(self, expression: str):
         """Evaluate a Python expression remotely and return its Python value."""
@@ -237,7 +312,7 @@ class Client:
     async def _get_value(self, expression: str):
         """Run the legacy value command shared with compatibility fallback."""
         async with self.connection as ssh:
-            async with ssh.create_process("value") as process:
+            async with ssh.create_process(VALUE_COMMAND) as process:
                 process.stdin.write(expression)
                 process.stdin.write_eof()
 
@@ -264,7 +339,7 @@ class Client:
             raise _protocol_version_error()
         try:
             event = await self._structured_operation(
-                PROTOCOL_EXECUTE_COMMAND,
+                EXECUTE_COMMAND,
                 code,
                 stdout=stdout,
                 stderr=stderr,
@@ -427,12 +502,140 @@ class Client:
                     raise ProtocolError("Remote result event has no valid status.")
                 return final_event
 
+    async def _shell_operation(
+        self,
+        payload: str,
+        stdout: TextIO | None = None,
+        stderr: TextIO | None = None,
+    ) -> dict:
+        """Run the structured shell protocol and return its final event."""
+        outputs = {
+            "stdout": _ShellOutput(stdout or sys.stdout),
+            "stderr": _ShellOutput(stderr or sys.stderr),
+        }
+        async with self.connection as ssh:
+            async with ssh.create_process(SHELL_COMMAND) as process:
+                process.stdin.write(payload)
+                process.stdin.write_eof()
+                final_event = None
+                diagnostic_stderr: list[str] = []
+
+                async def read_events():
+                    nonlocal final_event
+                    while line := await process.stdout.readline():
+                        try:
+                            event = json.loads(line)
+                        except (TypeError, json.JSONDecodeError) as exc:
+                            raise ProtocolError(
+                                "Remote server returned malformed shell protocol "
+                                "output."
+                            ) from exc
+                        if not isinstance(event, dict):
+                            raise ProtocolError(
+                                "Remote server returned a non-object shell event."
+                            )
+                        if final_event is not None:
+                            raise ProtocolError(
+                                "Remote server returned an event after the final "
+                                "shell result."
+                            )
+                        event_type = event.get("type")
+                        if event_type == SHELL_STREAM_EVENT:
+                            _forward_shell_stream_event(event, outputs)
+                        elif event_type == SHELL_RESULT_EVENT:
+                            final_event = event
+                        else:
+                            raise ProtocolError(
+                                "Remote server returned an unknown shell event."
+                            )
+
+                async def read_diagnostics():
+                    while data := await process.stderr.readline():
+                        diagnostic_stderr.append(data)
+
+                try:
+                    await asyncio.gather(read_events(), read_diagnostics())
+                    await process.wait()
+                except asyncio.CancelledError:
+                    process.terminate()
+                    with contextlib.suppress(Exception):
+                        await asyncio.wait_for(process.wait(), timeout=1)
+                    raise
+                finally:
+                    for output in outputs.values():
+                        output.finish()
+
+                if final_event is None:
+                    diagnostic = "".join(diagnostic_stderr)
+                    if "request must use protocol version" in diagnostic:
+                        raise _shell_protocol_version_error("unknown")
+                    detail = f" Remote stderr: {diagnostic}" if diagnostic else ""
+                    raise ProtocolError(
+                        f"Remote shell protocol returned no result.{detail}"
+                    )
+                if diagnostic_stderr:
+                    raise ProtocolError(
+                        f"Remote shell command failed: {''.join(diagnostic_stderr)}"
+                    )
+                return final_event
+
 
 def _protocol_version_error() -> ProtocolVersionError:
     return ProtocolVersionError(
         "The remote server does not support structured live execution. "
         "Upgrade herethere on the remote server."
     )
+
+
+def _shell_protocol_version_error(remote_version: object) -> ProtocolVersionError:
+    return ProtocolVersionError(
+        f"The remote shell protocol is not compatible with version "
+        f"{SHELL_PROTOCOL_VERSION}. Remote version: {remote_version!r}."
+    )
+
+
+def _forward_shell_stream_event(
+    event: dict,
+    outputs: dict[str, _ShellOutput],
+) -> None:
+    """Decode and forward one raw shell output event."""
+    output = outputs.get(event.get("stream"))
+    data = event.get("data")
+    if output is None or event.get("encoding") != "base64" or not isinstance(data, str):
+        raise ProtocolError("Remote server returned an invalid shell stream event.")
+    try:
+        decoded = base64.b64decode(data, validate=True)
+    except (ValueError, binascii.Error) as exc:
+        raise ProtocolError(
+            "Remote server returned invalid base64 shell output."
+        ) from exc
+    output.write(decoded)
+
+
+def _shell_result(event: dict) -> ShellResult:
+    """Validate and decode a structured shell completion event."""
+    if event.get("version") != SHELL_PROTOCOL_VERSION:
+        raise _shell_protocol_version_error(event.get("version"))
+    ok = event.get("ok")
+    returncode = event.get("returncode")
+    if (
+        not isinstance(ok, bool)
+        or not isinstance(returncode, int)
+        or isinstance(returncode, bool)
+        or ok != (returncode == 0)
+    ):
+        raise ProtocolError("Remote server returned invalid shell result fields.")
+    error = event.get("error")
+    if ok:
+        if error is not None:
+            raise ProtocolError("Successful remote shell result included an error.")
+    elif (
+        not isinstance(error, dict)
+        or error.get("type") != "ShellExitError"
+        or not isinstance(error.get("message"), str)
+    ):
+        raise ProtocolError("Failed remote shell result has no valid error.")
+    return ShellResult(returncode=returncode)
 
 
 def _logs_protocol_version_error() -> ProtocolVersionError:

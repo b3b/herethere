@@ -2,10 +2,8 @@
 
 import asyncio
 import inspect
-import json
 import logging
 import os
-import subprocess
 import threading
 import traceback
 from collections.abc import Callable
@@ -17,15 +15,24 @@ from typing import Any
 import asyncssh
 
 from herethere.everywhere.code import runcode
-from herethere.everywhere.live import (
-    PROTOCOL_EXECUTE_COMMAND,
-    execute_live,
+from herethere.everywhere.commands import (
+    BACKGROUND_COMMAND,
+    CODE_COMMAND,
+    EXECUTE_COMMAND,
+    PING_COMMAND,
+    RECENT_LOGS_COMMAND,
+    SHELL_COMMAND,
+    VALUE_COMMAND,
 )
+from herethere.everywhere.live import execute_live
 from herethere.everywhere.logging import logger
-from herethere.everywhere.protocol import EventStream, write_event
+from herethere.everywhere.protocol import (
+    EventStream,
+    decode_request_object,
+    write_event,
+)
 from herethere.everywhere.recent_logs import (
     DEFAULT_MAX_LOG_RECORDS,
-    RECENT_LOGS_COMMAND,
     RECENT_LOGS_PROTOCOL_VERSION,
     RecentLogHandler,
     create_recent_log_handler,
@@ -33,6 +40,7 @@ from herethere.everywhere.recent_logs import (
 from herethere.everywhere.redirected_output import redirect_output
 from herethere.everywhere.values import dumps_error, dumps_value
 from herethere.here.config import ServerConfig
+from herethere.here.shell import handle_shell_command
 
 MAX_COMMAND_LENGTH = 65536  # 65537
 CONNECTION_CLOSE_TIMEOUT = 1.0
@@ -66,21 +74,6 @@ async def handle_background_code_command(
         stderr=process.stderr,
         namespace=namespace,
     )
-
-
-async def handle_shell_command(process: asyncssh.SSHServerProcess, namespace: dict):  # pylint: disable=unused-argument
-    """Handler for SSH command 'shell': execute shell command.
-    Do not blocks main thread execution.
-    """
-    command = await process.stdin.read(MAX_COMMAND_LENGTH)
-    proc = subprocess.Popen(  # pylint: disable=consider-using-with
-        command,
-        shell=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        bufsize=0,
-    )
-    await process.redirect(stdout=proc.stdout, stderr=proc.stderr)
 
 
 async def maybe_await(value):
@@ -131,7 +124,7 @@ async def handle_recent_logs_command(
     request_text = await process.stdin.read(MAX_COMMAND_LENGTH)
     try:
         max_records = _decode_recent_logs_request(request_text)
-    except ValueError as exc:
+    except (TypeError, ValueError) as exc:
         process.stderr.write(f"Invalid recent-logs request: {exc}")
         return
     write_event(process.stdout, recent_logs.snapshot(max_records).asdict())
@@ -141,14 +134,8 @@ def _decode_recent_logs_request(request_text: str) -> int | None:
     """Decode an optional recent-log snapshot request."""
     if not request_text:
         return None
-    try:
-        request = json.loads(request_text)
-    except json.JSONDecodeError as exc:
-        raise ValueError("request must be valid JSON") from exc
-    if (
-        not isinstance(request, dict)
-        or request.get("version") != RECENT_LOGS_PROTOCOL_VERSION
-    ):
+    request = decode_request_object(request_text)
+    if request.get("version") != RECENT_LOGS_PROTOCOL_VERSION:
         raise ValueError(
             f"request must use protocol version {RECENT_LOGS_PROTOCOL_VERSION}"
         )
@@ -188,12 +175,12 @@ async def handle_client(
 
     try:
         processors = {
-            "ping": handle_ping_command,
-            "code": handle_code_command,
-            "background": handle_background_code_command,
-            "shell": handle_shell_command,
-            "value": handle_value_command,
-            PROTOCOL_EXECUTE_COMMAND: handle_execute_command,
+            PING_COMMAND: handle_ping_command,
+            CODE_COMMAND: handle_code_command,
+            BACKGROUND_COMMAND: handle_background_code_command,
+            SHELL_COMMAND: handle_shell_command,
+            VALUE_COMMAND: handle_value_command,
+            EXECUTE_COMMAND: handle_execute_command,
         }
         if recent_logs is not None:
             processors[RECENT_LOGS_COMMAND] = partial(

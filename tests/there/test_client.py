@@ -7,7 +7,8 @@ from pathlib import Path
 import asyncssh
 import pytest
 
-from herethere.everywhere.recent_logs import RECENT_LOGS_COMMAND
+from herethere.everywhere.commands import RECENT_LOGS_COMMAND, SHELL_COMMAND
+from herethere.everywhere.shell import ShellResult
 from herethere.everywhere.values import RemoteValueError, dumps_error, dumps_value
 from herethere.there.client import (
     Client,
@@ -139,6 +140,23 @@ async def test_shell_command_executed(there):
     with redirect_stdout(out):
         await there.shell("echo hello there")
     assert out.getvalue() == "hello there\n"
+
+
+@pytest.mark.asyncio
+async def test_structured_shell_returns_nonzero_and_separates_streams(there):
+    out = StringIO()
+    err = StringIO()
+
+    result = await there.execute_shell(
+        "printf out; printf err >&2; exit 7",
+        stdout=out,
+        stderr=err,
+    )
+
+    assert result.returncode == 7
+    assert not result.ok
+    assert out.getvalue() == "out"
+    assert err.getvalue() == "err"
 
 
 @pytest.mark.asyncio
@@ -836,6 +854,339 @@ async def test_logs_cancellation_terminates_process(mocker):
     client.connection = FakeConnectionContext(process)
 
     task = asyncio.create_task(client.logs())
+    await asyncio.sleep(0)
+    task.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    process.terminate.assert_called_once_with()
+    process.wait.assert_awaited_once_with()
+
+
+@pytest.mark.asyncio
+async def test_execute_shell_decodes_streams_and_result(mocker):
+    process = protocol_process(
+        mocker,
+        [
+            '{"type":"shell-stream","stream":"stdout","encoding":"base64",'
+            '"data":"b3V0"}\n',
+            '{"type":"shell-stream","stream":"stderr","encoding":"base64",'
+            '"data":"ZXJy"}\n',
+            '{"type":"shell-result","version":1,"ok":true,"returncode":0}\n',
+        ],
+    )
+    client = Client()
+    client.connection = FakeConnectionContext(process)
+    stdout = WriterWithoutFlush()
+    stderr = WriterWithoutFlush()
+
+    result = await client.execute_shell("command", stdout=stdout, stderr=stderr)
+
+    assert process.command == SHELL_COMMAND
+    request = json.loads(process.stdin.write.call_args.args[0])
+    assert request == {"version": 1, "command": "command"}
+    assert result == ShellResult(returncode=0)
+    assert stdout.written == "out"
+    assert stderr.written == "err"
+
+
+@pytest.mark.asyncio
+async def test_execute_shell_preserves_raw_bytes_for_bounded_writers(mocker):
+    class ByteWriter:
+        def __init__(self):
+            self.data = bytearray()
+            self.flushed = False
+
+        def write_bytes(self, data):
+            self.data.extend(data)
+
+        def flush(self):
+            self.flushed = True
+
+    process = protocol_process(
+        mocker,
+        [
+            '{"type":"shell-stream","stream":"stdout","encoding":"base64",'
+            '"data":"/w=="}\n',
+            '{"type":"shell-result","version":1,"ok":true,"returncode":0}\n',
+        ],
+    )
+    client = Client()
+    client.connection = FakeConnectionContext(process)
+    stdout = ByteWriter()
+
+    await client.execute_shell("command", stdout=stdout)
+
+    assert stdout.data == b"\xff"
+    assert stdout.flushed
+
+
+@pytest.mark.asyncio
+async def test_execute_shell_decodes_utf8_across_events_and_flushes_tail(mocker):
+    process = protocol_process(
+        mocker,
+        [
+            '{"type":"shell-stream","stream":"stdout","encoding":"base64",'
+            '"data":"4g=="}\n',
+            '{"type":"shell-stream","stream":"stdout","encoding":"base64",'
+            '"data":"gqw="}\n',
+            '{"type":"shell-stream","stream":"stderr","encoding":"base64",'
+            '"data":"4g=="}\n',
+            '{"type":"shell-result","version":1,"ok":true,"returncode":0}\n',
+        ],
+    )
+    client = Client()
+    client.connection = FakeConnectionContext(process)
+    stdout = WriterWithoutFlush()
+    stderr = WriterWithoutFlush()
+
+    await client.execute_shell("command", stdout=stdout, stderr=stderr)
+
+    assert stdout.written == "€"
+    assert stderr.written == "�"
+
+
+@pytest.mark.asyncio
+async def test_jupyter_shell_uses_structured_protocol_and_merges_output(mocker):
+    client = Client()
+    execute_shell = mocker.patch.object(
+        client,
+        "execute_shell",
+        new=mocker.AsyncMock(return_value=ShellResult(returncode=7)),
+    )
+    stdout = WriterWithoutFlush()
+
+    await client.shell("exit 7", stdout=stdout, stderr=WriterWithoutFlush())
+
+    execute_shell.assert_awaited_once_with(
+        "exit 7",
+        stdout=stdout,
+        stderr=stdout,
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("command", ["", "x" * 65537])
+async def test_execute_shell_validates_command(command):
+    client = Client()
+
+    with pytest.raises(ValueError, match="1..65536"):
+        await client.execute_shell(command)
+
+
+@pytest.mark.asyncio
+async def test_execute_shell_rejects_request_protocol_version(mocker):
+    process = protocol_process(
+        mocker,
+        [],
+        "Invalid shell request: request must use protocol version 1",
+    )
+    client = Client()
+    client.connection = FakeConnectionContext(process)
+
+    with pytest.raises(ProtocolVersionError, match="not compatible"):
+        await client.execute_shell("command")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("lines", "diagnostic", "message"),
+    [
+        (["not-json\n"], "", "malformed shell"),
+        (["null\n"], "", "non-object shell"),
+        (['{"type":"other"}\n'], "", "unknown shell"),
+        (
+            [
+                '{"type":"shell-result","version":1,"ok":true,"returncode":0}\n',
+                '{"type":"shell-result","version":1,"ok":true,"returncode":0}\n',
+            ],
+            "",
+            "after the final shell result",
+        ),
+        (
+            [
+                '{"type":"shell-result","version":1,"ok":true,"returncode":0}\n',
+                '{"type":"shell-stream","stream":"stdout","encoding":"base64",'
+                '"data":"bGF0ZQ=="}\n',
+            ],
+            "",
+            "after the final shell result",
+        ),
+        ([], "", "no result"),
+        ([], "diagnostic", "Remote stderr"),
+        (
+            ['{"type":"shell-result","version":1,"ok":true,"returncode":0}\n'],
+            "diagnostic",
+            "shell command failed",
+        ),
+    ],
+)
+async def test_execute_shell_rejects_invalid_protocol(
+    mocker,
+    lines,
+    diagnostic,
+    message,
+):
+    process = protocol_process(mocker, lines, diagnostic)
+    client = Client()
+    client.connection = FakeConnectionContext(process)
+
+    with pytest.raises(ProtocolError, match=message):
+        await client.execute_shell("command")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("event", "message"),
+    [
+        (
+            {
+                "type": "shell-result",
+                "version": 1,
+                "ok": "yes",
+                "returncode": 0,
+            },
+            "result fields",
+        ),
+        (
+            {
+                "type": "shell-result",
+                "version": 1,
+                "ok": True,
+                "returncode": True,
+            },
+            "result fields",
+        ),
+        (
+            {
+                "type": "shell-result",
+                "version": 1,
+                "ok": True,
+                "returncode": 1,
+            },
+            "result fields",
+        ),
+        (
+            {
+                "type": "shell-result",
+                "version": 1,
+                "ok": True,
+                "returncode": 0,
+                "error": {},
+            },
+            "included an error",
+        ),
+        (
+            {
+                "type": "shell-result",
+                "version": 1,
+                "ok": False,
+                "returncode": 1,
+            },
+            "no valid error",
+        ),
+        (
+            {
+                "type": "shell-result",
+                "version": 1,
+                "ok": False,
+                "returncode": 1,
+                "error": {"type": "other", "message": "bad"},
+            },
+            "no valid error",
+        ),
+        (
+            {
+                "type": "shell-result",
+                "version": 1,
+                "ok": False,
+                "returncode": 1,
+                "error": {"type": "ShellExitError", "message": 1},
+            },
+            "no valid error",
+        ),
+    ],
+)
+async def test_execute_shell_rejects_invalid_results(mocker, event, message):
+    process = protocol_process(mocker, [json.dumps(event)])
+    client = Client()
+    client.connection = FakeConnectionContext(process)
+
+    with pytest.raises(ProtocolError, match=message):
+        await client.execute_shell("command")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("version", [2, None])
+async def test_execute_shell_rejects_result_protocol_version(mocker, version):
+    event = {
+        "type": "shell-result",
+        "version": version,
+        "ok": True,
+        "returncode": 0,
+    }
+    process = protocol_process(mocker, [json.dumps(event)])
+    client = Client()
+    client.connection = FakeConnectionContext(process)
+
+    with pytest.raises(ProtocolVersionError, match=repr(version)):
+        await client.execute_shell("command")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "event",
+    [
+        {
+            "type": "shell-stream",
+            "stream": "other",
+            "encoding": "base64",
+            "data": "",
+        },
+        {
+            "type": "shell-stream",
+            "stream": "stdout",
+            "encoding": "text",
+            "data": "",
+        },
+        {
+            "type": "shell-stream",
+            "stream": "stdout",
+            "encoding": "base64",
+            "data": 1,
+        },
+        {
+            "type": "shell-stream",
+            "stream": "stdout",
+            "encoding": "base64",
+            "data": "***",
+        },
+    ],
+)
+async def test_execute_shell_rejects_invalid_stream_events(mocker, event):
+    process = protocol_process(mocker, [json.dumps(event)])
+    client = Client()
+    client.connection = FakeConnectionContext(process)
+
+    with pytest.raises(ProtocolError, match="shell stream|base64"):
+        await client.execute_shell("command")
+
+
+@pytest.mark.asyncio
+async def test_execute_shell_cancellation_terminates_channel(mocker):
+    class BlockingReader:
+        async def readline(self):
+            await asyncio.Event().wait()
+
+    process = mocker.Mock()
+    process.stdin = mocker.Mock()
+    process.stdout = BlockingReader()
+    process.stderr = BlockingReader()
+    process.wait = mocker.AsyncMock()
+    client = Client()
+    client.connection = FakeConnectionContext(process)
+
+    task = asyncio.create_task(client.execute_shell("command"))
     await asyncio.sleep(0)
     task.cancel()
 

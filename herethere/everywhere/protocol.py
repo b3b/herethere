@@ -10,6 +10,17 @@ def write_event(writer: TextIO, event: dict[str, Any]) -> None:
     writer.write("\n")
 
 
+def decode_request_object(request_text: str) -> dict[str, Any]:
+    """Decode one JSON request object with a stable validation error."""
+    try:
+        request = json.loads(request_text)
+    except json.JSONDecodeError as exc:
+        raise ValueError("request must be valid JSON") from exc
+    if not isinstance(request, dict):
+        raise TypeError("request must be a JSON object")
+    return request
+
+
 class EventStream:
     """Text writer which emits user output as JSON-lines stream events."""
 

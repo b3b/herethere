@@ -13,6 +13,7 @@ from click.testing import CliRunner
 
 from herethere.everywhere.config import ConnectionConfig, ConnectionConfigError
 from herethere.everywhere.recent_logs import RecentLogsSnapshot
+from herethere.everywhere.shell import ShellResult
 from herethere.there import cli as cli_module
 from herethere.there.cli import (
     MAX_MAX_OUTPUT,
@@ -57,6 +58,7 @@ def install_fake_remote(
     upload=None,
     download=None,
     logs=None,
+    execute_shell=None,
 ):
     class FakeClient:
         async def execute(self, code, stdout=None, stderr=None):
@@ -89,11 +91,17 @@ def install_fake_remote(
                 truncated=False,
             )
 
+        async def execute_shell(self, command, stdout=None, stderr=None):
+            if execute_shell is not None:
+                return execute_shell(command, stdout, stderr)
+            return ShellResult(returncode=0)
+
     def call(config, timeout, operation, **kwargs):
         del config, timeout
         assert kwargs.get("operation_phase", "remote_execution") in {
             "log_retrieval",
             "remote_execution",
+            "shell_execution",
             "transfer",
         }
         return asyncio.run(operation(FakeClient()))
@@ -1343,3 +1351,190 @@ async def test_console_logs_diagnose_code_before_remote_failure(
     payload = json.loads(logs_result.output)
     assert marker in payload["text"]
     assert payload["bytes"] == len(payload["text"].encode("utf-8"))
+
+
+@pytest.mark.parametrize(
+    ("args", "input_text", "expected"),
+    [
+        (["shell", "printf hello"], None, "printf hello"),
+        (["shell", "-"], "printf stdin", "printf stdin"),
+    ],
+)
+def test_shell_accepts_argument_and_stdin(monkeypatch, args, input_text, expected):
+    received = {}
+
+    def execute_shell(command, stdout, stderr):
+        received.update(
+            command=command,
+            direct_stdout=stdout is cli._invocation_stdout,
+            direct_stderr=stderr is cli._invocation_stderr,
+        )
+        stdout.write("out")
+        stderr.write("err")
+        return ShellResult(returncode=0)
+
+    install_fake_remote(monkeypatch, execute_shell=execute_shell)
+
+    result = CliRunner().invoke(cli, args, input=input_text)
+
+    assert result.exit_code == ExitCode.SUCCESS
+    assert received["command"] == expected
+    assert received["direct_stdout"]
+    assert received["direct_stderr"]
+    assert result.stdout == "out"
+    assert result.stderr == "err"
+
+
+def test_shell_json_captures_raw_streams_and_returncode(monkeypatch):
+    def execute_shell(command, stdout, stderr):
+        assert command == "command"
+        assert stdout is cli._stdout_collector
+        assert stderr is cli._stderr_collector
+        stdout.write_bytes(b"prefix-\xff-tail")
+        stderr.write_bytes(b"error")
+        return ShellResult(returncode=0)
+
+    install_fake_remote(monkeypatch, execute_shell=execute_shell)
+
+    result, payload = invoke_json(
+        ["shell", "--max-output", "5", "command"],
+    )
+
+    assert result.exit_code == ExitCode.SUCCESS
+    assert payload["returncode"] == 0
+    assert payload["stdout"] == "-tail"
+    assert payload["stdout_bytes"] == 13
+    assert payload["stdout_truncated"] is True
+    assert payload["stderr"] == "error"
+    assert payload["stderr_bytes"] == 5
+    assert payload["stderr_truncated"] is False
+
+
+@pytest.mark.parametrize("returncode", [1, 127, -15])
+def test_shell_nonzero_is_structured_remote_failure(monkeypatch, returncode):
+    install_fake_remote(
+        monkeypatch,
+        execute_shell=lambda command, stdout, stderr: ShellResult(returncode),
+    )
+
+    result, payload = invoke_json(["shell", "exit"])
+
+    assert result.exit_code == ExitCode.REMOTE
+    assert payload["ok"] is False
+    assert payload["returncode"] == returncode
+    assert payload["error"] == {
+        "type": "RemoteShellError",
+        "phase": "shell_execution",
+        "message": f"remote shell exited with status {returncode}",
+        "returncode": returncode,
+    }
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        ["shell"],
+        ["shell", ""],
+        ["shell", "one", "two"],
+    ],
+)
+def test_shell_rejects_missing_empty_and_extra_arguments(args):
+    result, payload = invoke_json(args)
+
+    assert result.exit_code == ExitCode.USAGE
+    assert payload["error"]["type"] == "UsageError"
+
+
+def test_shell_maps_stdin_read_error(monkeypatch):
+    class BrokenInput:
+        def read(self):
+            raise UnicodeError("invalid UTF-8")
+
+    monkeypatch.setattr(cli_module.sys, "stdin", BrokenInput())
+
+    with pytest.raises(LocalIOError, match="invalid UTF-8"):
+        cli_module._read_shell_source("-")
+
+
+def test_shell_maps_surrogate_escaped_stdin_to_local_io(monkeypatch):
+    class SurrogateInput:
+        def read(self):
+            return "\udcff"
+
+    monkeypatch.setattr(cli_module.sys, "stdin", SurrogateInput())
+
+    with pytest.raises(LocalIOError, match="decode stdin as UTF-8"):
+        cli_module._read_shell_source("-")
+
+
+def test_shell_rejects_non_utf8_argument():
+    with pytest.raises(click.UsageError, match="valid UTF-8"):
+        cli_module._read_shell_source("\udcff")
+
+
+def test_invocation_streams_require_active_invocation():
+    with pytest.raises(RuntimeError, match="not available"):
+        cli.invocation_streams()
+
+
+def test_shell_rejects_oversized_input():
+    result, payload = invoke_json(["shell", "x" * 65537])
+
+    assert result.exit_code == ExitCode.USAGE
+    assert "too large" in payload["error"]["message"]
+
+
+def test_shell_protocol_error_uses_shell_phase(monkeypatch):
+    def fail(awaitable):
+        awaitable.close()
+        raise cli_module.ProtocolError("bad shell protocol")
+
+    monkeypatch.setattr(cli_module.asyncio, "run", fail)
+
+    result, payload = invoke_json(["shell", "command"])
+
+    assert result.exit_code == ExitCode.REMOTE
+    assert payload["error"]["phase"] == "shell_execution"
+
+
+def test_shell_help_describes_sources_and_remote_options():
+    result = CliRunner().invoke(cli, ["shell", "--help"])
+
+    assert result.exit_code == ExitCode.SUCCESS
+    assert "stdin (`-`)" in result.output
+    assert "--max-output" in result.output
+
+
+@pytest.mark.asyncio
+async def test_console_shell_reports_separate_streams_and_failure(
+    server_instance,
+    connection_config,
+    tmp_path,
+):
+    config = tmp_path / "there.env"
+    config.write_text(
+        f"THERE_HOST={connection_config.host}\n"
+        f"THERE_PORT={connection_config.port}\n"
+        f"THERE_USERNAME={connection_config.username}\n"
+        f"THERE_PASSWORD={connection_config.password}\n",
+        encoding="utf-8",
+    )
+
+    result = await asyncio.to_thread(
+        CliRunner().invoke,
+        cli,
+        [
+            "--json",
+            "shell",
+            "--config",
+            str(config),
+            "printf out; printf err >&2; exit 9",
+        ],
+    )
+
+    payload = json.loads(result.output)
+    assert result.exit_code == ExitCode.REMOTE
+    assert payload["stdout"] == "out"
+    assert payload["stderr"] == "err"
+    assert payload["returncode"] == 9
+    assert server_instance.is_serving()

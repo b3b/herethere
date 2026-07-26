@@ -4,7 +4,6 @@ import logging
 from collections import deque
 from dataclasses import dataclass
 
-RECENT_LOGS_COMMAND = "recent-logs"
 RECENT_LOGS_RESPONSE_TYPE = "recent-logs"
 RECENT_LOGS_PROTOCOL_VERSION = 1
 RECENT_LOGS_FORMAT = "[%(levelname)s] %(asctime)s %(threadName)s %(name)s: %(message)s"
@@ -115,7 +114,6 @@ def create_recent_log_handler(
 __all__ = (
     "DEFAULT_MAX_LOG_BYTES",
     "DEFAULT_MAX_LOG_RECORDS",
-    "RECENT_LOGS_COMMAND",
     "RECENT_LOGS_FORMAT",
     "RECENT_LOGS_PROTOCOL_VERSION",
     "RECENT_LOGS_RESPONSE_TYPE",

@@ -11,13 +11,14 @@ from dataclasses import dataclass
 from enum import IntEnum
 from importlib import metadata
 from pathlib import Path
-from typing import Any
+from typing import Any, TextIO, cast
 
 import asyncssh
 import click
 
 from herethere.everywhere.config import ConnectionConfig, ConnectionConfigError
 from herethere.everywhere.recent_logs import DEFAULT_MAX_LOG_RECORDS
+from herethere.everywhere.shell import MAX_SHELL_COMMAND_BYTES
 from herethere.everywhere.values import RemoteValueError
 from herethere.there.client import (
     Client,
@@ -56,11 +57,13 @@ class CLIError(Exception):
         *,
         phase: str | None = None,
         details: dict[str, Any] | None = None,
+        result_fields: dict[str, Any] | None = None,
     ):
         super().__init__(message)
         if phase is not None:
             self.phase = phase
         self.details = details or {}
+        self.result_fields = result_fields or {}
 
 
 class ConnectionFailure(CLIError):
@@ -120,6 +123,21 @@ class RemoteExecutionFailure(RemoteOperationError):
                 "remote_type": error.remote_type,
                 "traceback": error.traceback,
             },
+        )
+
+
+class RemoteShellFailure(RemoteOperationError):
+    """A remote shell subprocess returned a non-zero status."""
+
+    error_type = "RemoteShellError"
+    phase = "shell_execution"
+
+    def __init__(self, returncode: int):
+        message = f"remote shell exited with status {returncode}"
+        super().__init__(
+            message,
+            details={"returncode": returncode},
+            result_fields={"returncode": returncode},
         )
 
 
@@ -335,6 +353,8 @@ class PluginGroup(click.Group):
     _output_format = "text"
     _stdout_collector: BoundedTextCollector | None = None
     _stderr_collector: BoundedTextCollector | None = None
+    _invocation_stdout: TextIO | None = None
+    _invocation_stderr: TextIO | None = None
 
     def _plugins(self) -> dict[str, tuple[Any, ...]]:
         plugins: dict[str, list[Any]] = {}
@@ -427,6 +447,12 @@ class PluginGroup(click.Group):
                 for key, value in captured.result.items()
                 if key not in envelope
             )
+        if isinstance(captured.error, CLIError):
+            envelope.update(
+                (key, value)
+                for key, value in captured.error.result_fields.items()
+                if key not in envelope
+            )
         click.echo(json.dumps(envelope, ensure_ascii=False, separators=(",", ":")))
         if standalone_mode:
             if exit_code:
@@ -442,6 +468,8 @@ class PluginGroup(click.Group):
         complete_var: str | None,
         extra: dict[str, Any],
     ) -> _CapturedInvocation:
+        self._invocation_stdout = sys.stdout
+        self._invocation_stderr = sys.stderr
         captured = _CapturedInvocation(
             stdout=BoundedTextCollector(),
             stderr=BoundedTextCollector(),
@@ -462,7 +490,15 @@ class PluginGroup(click.Group):
         finally:
             self._stdout_collector = None
             self._stderr_collector = None
+            self._invocation_stdout = None
+            self._invocation_stderr = None
         return captured
+
+    def invocation_streams(self) -> tuple[TextIO, TextIO]:
+        """Return the output streams outside this invocation's capture."""
+        if self._invocation_stdout is None or self._invocation_stderr is None:
+            raise RuntimeError("CLI invocation streams are not available.")
+        return self._invocation_stdout, self._invocation_stderr
 
 
 def _finish_text_mode(
@@ -582,6 +618,31 @@ def _read_run_source(source: str | None, code_text: str | None) -> str:
         return Path(source).read_text(encoding="utf-8")
     except (OSError, UnicodeError) as exc:
         raise LocalIOError(f"Could not read {source!r}: {exc}") from exc
+
+
+def _read_shell_source(source: str) -> str:
+    """Read one shell command argument or a UTF-8 script from stdin."""
+    if source != "-":
+        command = source
+    else:
+        try:
+            command = sys.stdin.read()
+        except (OSError, UnicodeError) as exc:
+            raise LocalIOError(f"Could not read stdin: {exc}") from exc
+    if not command:
+        raise click.UsageError("Shell command must not be empty.")
+    try:
+        size = len(command.encode("utf-8"))
+    except UnicodeEncodeError as exc:
+        if source == "-":
+            raise LocalIOError(f"Could not decode stdin as UTF-8: {exc}") from exc
+        raise click.UsageError("Shell command must be valid UTF-8.") from exc
+    if size > MAX_SHELL_COMMAND_BYTES:
+        raise click.UsageError(
+            f"Shell command is too large "
+            f"({size} bytes > {MAX_SHELL_COMMAND_BYTES} bytes)."
+        )
+    return command
 
 
 async def _run_remote_operation(
@@ -738,6 +799,37 @@ def logs_command(ctx, config, timeout, max_output, records):
     }
 
 
+@cli.command("shell")
+@remote_options
+@click.argument("source")
+@click.pass_context
+def shell_command(ctx, config, timeout, max_output, source):
+    """Execute one remote shell command or a UTF-8 script from stdin (`-`)."""
+    command = _read_shell_source(source)
+    stdout = sys.stdout
+    stderr = sys.stderr
+    if ctx.find_root().obj.output_format == "text":
+        group = cast(PluginGroup, ctx.find_root().command)
+        stdout, stderr = group.invocation_streams()
+
+    async def operation(client):
+        return await client.execute_shell(
+            command,
+            stdout=stdout,
+            stderr=stderr,
+        )
+
+    result = _call_remote(
+        config,
+        timeout,
+        operation,
+        operation_phase="shell_execution",
+    )
+    if not result.ok:
+        raise RemoteShellFailure(result.returncode)
+    return {"returncode": result.returncode}
+
+
 def _split_transfer_paths(paths, default_destination):
     """Split transfer arguments into sources and their final destination."""
     if len(paths) == 1:
@@ -849,6 +941,7 @@ __all__ = (
     "MAX_MAX_OUTPUT",
     "PluginError",
     "RemoteOperationError",
+    "RemoteShellFailure",
     "SFTPFailure",
     "OperationTimeout",
     "ProtocolVersionFailure",
@@ -860,6 +953,7 @@ __all__ = (
     "load_connection_config",
     "remote_options",
     "run_command",
+    "shell_command",
     "download_command",
     "upload_command",
 )

@@ -1,4 +1,5 @@
 import asyncio
+import base64
 import contextlib
 import json
 import logging
@@ -8,12 +9,20 @@ from pathlib import Path
 import asyncssh
 import pytest
 
-from herethere.everywhere.recent_logs import (
+from herethere.everywhere.commands import (
+    BACKGROUND_COMMAND,
+    CODE_COMMAND,
+    PING_COMMAND,
     RECENT_LOGS_COMMAND,
+    SHELL_COMMAND,
+    VALUE_COMMAND,
+)
+from herethere.everywhere.recent_logs import (
     RECENT_LOGS_PROTOCOL_VERSION,
     RECENT_LOGS_RESPONSE_TYPE,
     create_recent_log_handler,
 )
+from herethere.everywhere.shell import SHELL_PROTOCOL_VERSION
 from herethere.everywhere.values import RemoteValueError, loads_value
 from herethere.here.server import (
     RunningServer,
@@ -392,29 +401,74 @@ async def test_log_wait_closed_results_handles_cancelled_and_failed_tasks(mocker
 @pytest.mark.asyncio
 async def test_pong_returned(server_instance, connection_config):
     async with asyncssh.connect(**connection_config.asdict, known_hosts=None) as conn:
-        result = await conn.run("ping", check=True)
+        result = await conn.run(PING_COMMAND, check=True)
         assert result.stdout == "pong"
 
 
 @pytest.mark.asyncio
 async def test_line_executed(server_instance, connection_config):
     async with asyncssh.connect(**connection_config.asdict, known_hosts=None) as conn:
-        result = await conn.run("code", check=True, input="print('hello there')")
+        result = await conn.run(CODE_COMMAND, check=True, input="print('hello there')")
         assert result.stdout == "hello there\n"
 
 
 @pytest.mark.asyncio
 async def test_backgroud_line_executed(server_instance, connection_config):
     async with asyncssh.connect(**connection_config.asdict, known_hosts=None) as conn:
-        result = await conn.run("background", check=True, input="print('hello there')")
+        result = await conn.run(
+            BACKGROUND_COMMAND,
+            check=True,
+            input="print('hello there')",
+        )
         assert result.stdout == "hello there\n"
 
 
 @pytest.mark.asyncio
-async def test_shell_line_executed(server_instance, connection_config):
+async def test_structured_shell_streams_separately_and_returns_status(
+    server_instance, connection_config
+):
+    request = json.dumps(
+        {
+            "version": SHELL_PROTOCOL_VERSION,
+            "command": "printf out; printf err >&2; exit 7",
+        }
+    )
     async with asyncssh.connect(**connection_config.asdict, known_hosts=None) as conn:
-        result = await conn.run("shell", check=True, input="echo hello there")
-        assert result.stdout == "hello there\n"
+        result = await conn.run(
+            SHELL_COMMAND,
+            check=True,
+            input=request,
+        )
+
+    events = [json.loads(line) for line in result.stdout.splitlines()]
+    streams = {"stdout": bytearray(), "stderr": bytearray()}
+    for event in events[:-1]:
+        assert event["type"] == "shell-stream"
+        assert event["encoding"] == "base64"
+        streams[event["stream"]].extend(base64.b64decode(event["data"]))
+    assert streams == {"stdout": b"out", "stderr": b"err"}
+    assert events[-1] == {
+        "type": "shell-result",
+        "version": SHELL_PROTOCOL_VERSION,
+        "ok": False,
+        "returncode": 7,
+        "error": {
+            "type": "ShellExitError",
+            "message": "remote shell exited with status 7",
+        },
+    }
+    assert result.stderr == ""
+
+
+@pytest.mark.asyncio
+async def test_structured_shell_rejects_invalid_request(
+    server_instance, connection_config
+):
+    async with asyncssh.connect(**connection_config.asdict, known_hosts=None) as conn:
+        result = await conn.run(SHELL_COMMAND, check=True, input="{")
+
+    assert result.stdout == ""
+    assert "Invalid shell request" in result.stderr
 
 
 @pytest.mark.asyncio
@@ -430,7 +484,7 @@ async def test_global_variable_available(server_instance, connection_config):
 @pytest.mark.asyncio
 async def test_value_command_returns_simple_value(server_instance, connection_config):
     async with asyncssh.connect(**connection_config.asdict, known_hosts=None) as conn:
-        result = await conn.run("value", check=True, input="1 + 1")
+        result = await conn.run(VALUE_COMMAND, check=True, input="1 + 1")
         assert loads_value(result.stdout) == 2
 
 
@@ -439,7 +493,11 @@ async def test_value_command_captures_expression_stdout(
     server_instance, connection_config
 ):
     async with asyncssh.connect(**connection_config.asdict, known_hosts=None) as conn:
-        result = await conn.run("value", check=True, input="print('noisy') or 1")
+        result = await conn.run(
+            VALUE_COMMAND,
+            check=True,
+            input="print('noisy') or 1",
+        )
 
     assert loads_value(result.stdout) == 1
     assert "noisy" not in result.stdout
@@ -448,15 +506,19 @@ async def test_value_command_captures_expression_stdout(
 @pytest.mark.asyncio
 async def test_value_command_uses_same_namespace(server_instance, connection_config):
     async with asyncssh.connect(**connection_config.asdict, known_hosts=None) as conn:
-        await conn.run("code", check=True, input="value_command_var = (2, 3)")
-        result = await conn.run("value", check=True, input="value_command_var")
+        await conn.run(CODE_COMMAND, check=True, input="value_command_var = (2, 3)")
+        result = await conn.run(
+            VALUE_COMMAND,
+            check=True,
+            input="value_command_var",
+        )
         assert loads_value(result.stdout) == (2, 3)
 
 
 @pytest.mark.asyncio
 async def test_value_command_returns_remote_error(server_instance, connection_config):
     async with asyncssh.connect(**connection_config.asdict, known_hosts=None) as conn:
-        result = await conn.run("value", check=True, input="missing_name")
+        result = await conn.run(VALUE_COMMAND, check=True, input="missing_name")
 
     with pytest.raises(RemoteValueError, match="NameError"):
         loads_value(result.stdout)
@@ -470,7 +532,11 @@ async def test_value_command_awaits_coroutine(server_instance, connection_config
             check=True,
             input="async def value_command_answer():\n    return 42\n",
         )
-        result = await conn.run("value", check=True, input="value_command_answer()")
+        result = await conn.run(
+            VALUE_COMMAND,
+            check=True,
+            input="value_command_answer()",
+        )
         assert loads_value(result.stdout) == 42
 
 
@@ -629,7 +695,7 @@ def test_decode_recent_logs_request(request_text, expected):
     ],
 )
 def test_decode_recent_logs_request_rejects_invalid_input(request_text):
-    with pytest.raises(ValueError):
+    with pytest.raises((TypeError, ValueError)):
         _decode_recent_logs_request(request_text)
 
 
