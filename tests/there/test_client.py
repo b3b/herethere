@@ -7,7 +7,11 @@ from pathlib import Path
 import asyncssh
 import pytest
 
-from herethere.everywhere.commands import RECENT_LOGS_COMMAND, SHELL_COMMAND
+from herethere.everywhere.commands import (
+    PING_COMMAND,
+    RECENT_LOGS_COMMAND,
+    SHELL_COMMAND,
+)
 from herethere.everywhere.shell import ShellResult
 from herethere.everywhere.values import RemoteValueError, dumps_error, dumps_value
 from herethere.there.client import (
@@ -18,6 +22,13 @@ from herethere.there.client import (
     ProtocolVersionError,
 )
 from herethere.there.commands.log import LOG_COMMAND_TEMPLATE
+
+
+@pytest.mark.asyncio
+async def test_repeated_ping_keeps_server_available(there):
+    assert await there.ping() == "pong"
+    assert await there.ping() == "pong"
+    assert await there.get("6 * 7") == 42
 
 
 @pytest.mark.asyncio
@@ -310,8 +321,28 @@ def test_persistent_connection_close_ignores_asyncssh_error(mocker):
 async def test_persistent_connection_reconnects_after_failed_ping(mocker):
     connection = PersistentConnection()
     stale = mocker.Mock()
-    stale.run = mocker.AsyncMock(side_effect=asyncssh.Error(1, "ping failed"))
+    stale.create_process.side_effect = asyncssh.Error(1, "ping failed")
     connection.connection = stale
+    reconnect = mocker.patch.object(
+        connection,
+        "reconnect",
+        new=mocker.AsyncMock(return_value="fresh"),
+    )
+
+    assert await connection.ensure_connected() == "fresh"
+
+    reconnect.assert_awaited_once_with()
+    assert connection.connection is None
+
+
+@pytest.mark.asyncio
+async def test_persistent_connection_reconnects_after_invalid_ping(mocker):
+    process = mocker.Mock()
+    process.stdout = ReaderOnce(b"wrong")
+    process.stderr = ReaderOnce(b"")
+    process.wait = mocker.AsyncMock(return_value=mocker.Mock(returncode=0))
+    connection = PersistentConnection()
+    connection.connection = FakeConnectionContext(process)
     reconnect = mocker.patch.object(
         connection,
         "reconnect",
@@ -380,8 +411,12 @@ class FakeConnectionContext:
     async def __aexit__(self, *exc_info):
         pass
 
-    def create_process(self, command):
+    def close(self):
+        pass
+
+    def create_process(self, command, **kwargs):
         self.process.command = command
+        self.process.process_options = kwargs
         return FakeProcessContext(self.process)
 
 
@@ -392,6 +427,90 @@ def protocol_process(mocker, stdout, stderr=""):
     process.stderr = ReaderOnce(stderr)
     process.wait = mocker.AsyncMock()
     return process
+
+
+@pytest.mark.asyncio
+async def test_client_ping_sends_shared_command_and_returns_pong(mocker):
+    process = mocker.Mock()
+    process.stdout = ReaderOnce(b"pong")
+    process.stderr = ReaderOnce(b"")
+    process.wait = mocker.AsyncMock(return_value=mocker.Mock(returncode=0))
+    client = Client()
+    client.connection.connection = FakeConnectionContext(process)
+
+    assert await client.ping() == "pong"
+
+    assert process.command == PING_COMMAND
+    assert process.process_options == {"encoding": None}
+    process.wait.assert_awaited_once_with()
+
+
+@pytest.mark.asyncio
+async def test_ping_reconnects_when_connection_is_missing(mocker):
+    process = mocker.Mock()
+    process.stdout = ReaderOnce(b"pong")
+    process.stderr = ReaderOnce(b"")
+    process.wait = mocker.AsyncMock(return_value=mocker.Mock(returncode=0))
+    ssh = FakeConnectionContext(process)
+    connection = PersistentConnection()
+    reconnect = mocker.patch.object(
+        connection,
+        "reconnect",
+        new=mocker.AsyncMock(return_value=ssh),
+    )
+
+    assert await connection.ping() == "pong"
+
+    reconnect.assert_awaited_once_with()
+
+
+@pytest.mark.parametrize(
+    ("stdout", "stderr", "returncode"),
+    [
+        (b"", b"", 0),
+        (b"pon", b"", 0),
+        (b"pong\n", b"", 0),
+        (b"\xff", b"", 0),
+        (b"pong", b"\xff", 0),
+        (b"pong", b"", 1),
+    ],
+)
+@pytest.mark.asyncio
+async def test_ping_rejects_invalid_response(mocker, stdout, stderr, returncode):
+    process = mocker.Mock()
+    process.stdout = ReaderOnce(stdout)
+    process.stderr = ReaderOnce(stderr)
+    process.wait = mocker.AsyncMock(return_value=mocker.Mock(returncode=returncode))
+    connection = PersistentConnection()
+    connection.connection = FakeConnectionContext(process)
+
+    with pytest.raises(ProtocolError, match="invalid ping response"):
+        await connection.ping()
+
+
+@pytest.mark.parametrize("terminate_error", [None, OSError("channel closed")])
+@pytest.mark.asyncio
+async def test_ping_cancellation_terminates_channel_and_waits(mocker, terminate_error):
+    class BlockingReader:
+        async def read(self):
+            await asyncio.Event().wait()
+
+    process = mocker.Mock()
+    process.stdout = BlockingReader()
+    process.stderr = BlockingReader()
+    process.wait = mocker.AsyncMock()
+    process.terminate.side_effect = terminate_error
+    connection = PersistentConnection()
+    connection.connection = FakeConnectionContext(process)
+
+    task = asyncio.create_task(connection.ping())
+    await asyncio.sleep(0)
+    task.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    process.terminate.assert_called_once_with()
+    process.wait.assert_awaited_once_with()
 
 
 @pytest.mark.asyncio

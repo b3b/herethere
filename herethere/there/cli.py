@@ -1,5 +1,7 @@
 """Standalone command-line interface for herethere."""
 
+# pylint: disable=too-many-lines
+
 import ast
 import asyncio
 import io
@@ -30,6 +32,7 @@ from herethere.there.client import (
 DEFAULT_MAX_OUTPUT = 64 * 1024
 MAX_MAX_OUTPUT = 1024 * 1024
 MAX_CODE_BYTES = 64 * 1024
+DEFAULT_PING_TIMEOUT = 10.0
 PLUGIN_GROUP = "herethere.cli"
 
 
@@ -308,32 +311,39 @@ def load_connection_config(config: str | Path | None = None) -> ConnectionConfig
     return ConnectionConfig.load(prefix="there", path=path)
 
 
-def remote_options(function):
+def remote_options(function=None, *, timeout_default=None):
     """Add the options shared by commands which contact a remote target."""
 
-    options = (
-        click.option(
-            "--config",
-            type=click.Path(path_type=Path, dir_okay=False),
-            help="Connection config file (default: search for there.env).",
-        ),
-        click.option(
-            "--timeout",
-            type=click.FloatRange(min=0.0, min_open=True),
-            help="Operation timeout in seconds.",
-        ),
-        click.option(
-            "--max-output",
-            default=DEFAULT_MAX_OUTPUT,
-            show_default=True,
-            type=click.IntRange(1, MAX_MAX_OUTPUT),
-            callback=_set_max_output,
-            help="Maximum retained bytes per output stream.",
-        ),
-    )
-    for option in reversed(options):
-        function = option(function)
-    return function
+    def decorate(target):
+        options = (
+            click.option(
+                "--config",
+                type=click.Path(path_type=Path, dir_okay=False),
+                help="Connection config file (default: search for there.env).",
+            ),
+            click.option(
+                "--timeout",
+                default=timeout_default,
+                show_default=timeout_default is not None,
+                type=click.FloatRange(min=0.0, min_open=True),
+                help="Operation timeout in seconds.",
+            ),
+            click.option(
+                "--max-output",
+                default=DEFAULT_MAX_OUTPUT,
+                show_default=True,
+                type=click.IntRange(1, MAX_MAX_OUTPUT),
+                callback=_set_max_output,
+                help="Maximum retained bytes per output stream.",
+            ),
+        )
+        for option in reversed(options):
+            target = option(target)
+        return target
+
+    if function is None:
+        return decorate
+    return decorate(function)
 
 
 def _entry_points() -> tuple[Any, ...]:
@@ -722,6 +732,28 @@ def _call_remote(
                 traceback=exc.traceback,
             )
         ) from exc
+
+
+@cli.command("ping")
+@remote_options(timeout_default=DEFAULT_PING_TIMEOUT)
+@click.pass_context
+def ping_command(ctx, config, timeout, max_output):
+    """Check whether the remote herethere server is ready."""
+    del max_output
+
+    async def operation(client):
+        return await client.ping()
+
+    response = _call_remote(
+        config,
+        timeout,
+        operation,
+        operation_phase="ping",
+    )
+    if ctx.find_root().obj.output_format == "text":
+        click.echo(response)
+        return None
+    return {"response": response}
 
 
 @cli.command("run")

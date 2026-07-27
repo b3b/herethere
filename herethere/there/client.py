@@ -161,12 +161,36 @@ class PersistentConnection(AbstractAsyncContextManager):
         """Check connection is active."""
         if self.connection:
             try:
-                await self.connection.run(PING_COMMAND, check=True)
-            except asyncssh.Error:
+                await self.ping()
+            except (asyncssh.Error, ProtocolError):
                 logger.debug("SSH connection ping failed.")
             else:
                 return True
         return False
+
+    async def ping(self) -> str:
+        """Run and validate one ping on the current connection."""
+        ssh = self.connection
+        if ssh is None:
+            ssh = await self.reconnect()
+
+        async with ssh.create_process(PING_COMMAND, encoding=None) as process:
+            try:
+                stdout, stderr = await asyncio.gather(
+                    process.stdout.read(),
+                    process.stderr.read(),
+                )
+                result = await process.wait()
+            except asyncio.CancelledError:
+                with contextlib.suppress(OSError):
+                    process.terminate()
+                with contextlib.suppress(Exception):
+                    await asyncio.wait_for(process.wait(), timeout=1)
+                raise
+
+        if result.returncode != 0 or stdout != b"pong" or stderr:
+            raise ProtocolError("Remote server returned an invalid ping response.")
+        return "pong"
 
     async def reconnect(self):
         """Establish connection."""
@@ -198,6 +222,10 @@ class Client:
     async def disconnect(self):
         """Disconnect from the remote."""
         self.connection.close()
+
+    async def ping(self) -> str:
+        """Return ``pong`` after validating the remote ping response."""
+        return await self.connection.ping()
 
     async def runcode(
         self,

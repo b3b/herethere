@@ -16,6 +16,7 @@ from herethere.everywhere.recent_logs import RecentLogsSnapshot
 from herethere.everywhere.shell import ShellResult
 from herethere.there import cli as cli_module
 from herethere.there.cli import (
+    DEFAULT_PING_TIMEOUT,
     MAX_MAX_OUTPUT,
     BoundedTextCollector,
     ConnectionFailure,
@@ -53,6 +54,7 @@ def invoke_json(args):
 def install_fake_remote(
     monkeypatch,
     *,
+    ping=None,
     execute=None,
     get=None,
     upload=None,
@@ -61,6 +63,11 @@ def install_fake_remote(
     execute_shell=None,
 ):
     class FakeClient:
+        async def ping(self):
+            if ping is not None:
+                return ping()
+            return "pong"
+
         async def execute(self, code, stdout=None, stderr=None):
             if execute is not None:
                 return execute(code, stdout, stderr)
@@ -100,6 +107,7 @@ def install_fake_remote(
         del config, timeout
         assert kwargs.get("operation_phase", "remote_execution") in {
             "log_retrieval",
+            "ping",
             "remote_execution",
             "shell_execution",
             "transfer",
@@ -107,6 +115,77 @@ def install_fake_remote(
         return asyncio.run(operation(FakeClient()))
 
     monkeypatch.setattr(cli_module, "_call_remote", call)
+
+
+def test_ping_text_prints_exact_response(monkeypatch):
+    received = {}
+
+    def call(config, timeout, operation, **kwargs):
+        del config, operation, kwargs
+        received["timeout"] = timeout
+        return "pong"
+
+    monkeypatch.setattr(cli_module, "_call_remote", call)
+
+    result = CliRunner().invoke(cli, ["ping"])
+
+    assert result.exit_code == ExitCode.SUCCESS
+    assert result.output == "pong\n"
+    assert result.return_value is None
+    assert received["timeout"] == DEFAULT_PING_TIMEOUT
+
+
+def test_ping_help_shows_default_timeout():
+    result = CliRunner().invoke(cli, ["ping", "--help"])
+
+    assert result.exit_code == ExitCode.SUCCESS
+    assert "--timeout" in result.output
+    assert "10.0" in result.output
+
+
+def test_ping_json_returns_response_outside_captured_stdout(monkeypatch):
+    install_fake_remote(monkeypatch)
+
+    result, payload = invoke_json(["ping"])
+
+    assert result.exit_code == ExitCode.SUCCESS
+    assert payload["response"] == "pong"
+    assert payload["stdout"] == ""
+    assert payload["stdout_bytes"] == 0
+    assert payload["stderr"] == ""
+
+
+def test_ping_protocol_error_uses_ping_phase(monkeypatch):
+    def fail(awaitable):
+        awaitable.close()
+        raise cli_module.ProtocolError("invalid ping")
+
+    monkeypatch.setattr(cli_module.asyncio, "run", fail)
+
+    result, payload = invoke_json(["ping"])
+
+    assert result.exit_code == ExitCode.REMOTE
+    assert payload["error"]["phase"] == "ping"
+
+
+def test_ping_timeout_uses_ping_phase(monkeypatch):
+    class ClientStub:
+        async def connect(self, config):
+            del config
+
+        async def ping(self):
+            await asyncio.sleep(1)
+
+        async def disconnect(self):
+            pass
+
+    monkeypatch.setattr(cli_module, "Client", ClientStub)
+    monkeypatch.setattr(cli_module, "load_connection_config", lambda config: object())
+
+    result, payload = invoke_json(["ping", "--timeout", "0.001"])
+
+    assert result.exit_code == ExitCode.TIMEOUT
+    assert payload["error"]["phase"] == "ping"
 
 
 def test_console_help_lists_builtins_without_ipython(monkeypatch):

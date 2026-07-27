@@ -90,6 +90,21 @@ the end of the stream and sets the corresponding `*_truncated` field.
 Files and stdin used as command input are read as UTF-8 text. Unreadable input
 is reported as a local I/O error.
 
+## Checking server readiness
+
+`ping` checks connectivity, authentication, command routing, and the expected
+herethere response without executing code in the live application namespace:
+
+```console
+there ping --config ./there.env
+there --json ping --config ./there.env
+```
+
+Text mode prints `pong`. JSON mode returns it in the `response` field. This is
+a transport readiness check; it does not establish that an application's UI or
+application-specific state is ready. Ping has a 10-second total timeout by
+default; use `--timeout SECONDS` to override it.
+
 ## Running code in the live interpreter
 
 `run` executes Python in the existing remote process and namespace:
