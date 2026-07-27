@@ -19,6 +19,7 @@ from herethere.there.cli import (
     DEFAULT_PING_TIMEOUT,
     MAX_MAX_OUTPUT,
     BoundedTextCollector,
+    CLIContext,
     ConnectionFailure,
     ExitCode,
     LocalIOError,
@@ -27,8 +28,8 @@ from herethere.there.cli import (
     ProtocolVersionFailure,
     RemoteOperationError,
     cli,
+    get_cli_context,
     load_connection_config,
-    remote_options,
 )
 
 
@@ -135,12 +136,13 @@ def test_ping_text_prints_exact_response(monkeypatch):
     assert received["timeout"] == DEFAULT_PING_TIMEOUT
 
 
-def test_ping_help_shows_default_timeout():
+def test_ping_help_only_shows_operation_options():
     result = CliRunner().invoke(cli, ["ping", "--help"])
 
     assert result.exit_code == ExitCode.SUCCESS
-    assert "--timeout" in result.output
-    assert "10.0" in result.output
+    assert "--timeout" not in result.output
+    assert "--config" not in result.output
+    assert "--max-output" not in result.output
 
 
 def test_ping_json_returns_response_outside_captured_stdout(monkeypatch):
@@ -182,7 +184,7 @@ def test_ping_timeout_uses_ping_phase(monkeypatch):
     monkeypatch.setattr(cli_module, "Client", ClientStub)
     monkeypatch.setattr(cli_module, "load_connection_config", lambda config: object())
 
-    result, payload = invoke_json(["ping", "--timeout", "0.001"])
+    result, payload = invoke_json(["--timeout", "0.001", "ping"])
 
     assert result.exit_code == ExitCode.TIMEOUT
     assert payload["error"]["phase"] == "ping"
@@ -203,13 +205,28 @@ def test_console_help_lists_builtins_without_ipython(monkeypatch):
     result = CliRunner().invoke(module.cli, ["--help"])
 
     assert result.exit_code == 0
-    assert "--format [text|json]" in result.output
+    for option in (
+        "--config",
+        "--timeout",
+        "--max-output",
+        "--format [text|json]",
+        "--json",
+    ):
+        assert option in result.output
     assert "there_group" not in result.output
 
 
 def test_console_script_is_registered():
     pyproject = Path("pyproject.toml").read_text(encoding="utf-8")
     assert '[project.scripts]\nthere = "herethere.there.cli:cli"' in pyproject
+
+
+def test_cli_documentation_uses_root_connection_options():
+    documentation = Path("docs/cli.md").read_text(encoding="utf-8")
+
+    assert "there --json --config ./there.env run app.py" in documentation
+    assert "there --json run --config" not in documentation
+    assert "there ping --config" not in documentation
 
 
 @pytest.mark.parametrize("option", [["--json"], ["--format", "json"]])
@@ -253,6 +270,21 @@ def test_root_option_after_command_is_not_accepted(monkeypatch):
     result = CliRunner().invoke(cli, ["external", "--json"])
     assert result.exit_code == ExitCode.USAGE
     assert not result.output.startswith("{")
+
+
+@pytest.mark.parametrize(
+    "trailing_option",
+    (
+        ["--config", "custom.env"],
+        ["--timeout", "1"],
+        ["--max-output", "12"],
+    ),
+)
+def test_connection_root_options_after_builtin_are_rejected(trailing_option):
+    result, payload = invoke_json(["run", *trailing_option, "-c", "pass"])
+
+    assert result.exit_code == ExitCode.USAGE
+    assert payload["error"]["type"] == "UsageError"
 
 
 def test_help_is_never_json_wrapped():
@@ -385,31 +417,79 @@ def test_bounded_collector_requires_text():
 @pytest.mark.parametrize("value", ["bad", "0", str(MAX_MAX_OUTPUT + 1)])
 def test_max_output_option_validates_range(monkeypatch, value):
     @click.command()
-    @remote_options
-    def remote(config, timeout, max_output):
-        del config, timeout, max_output
+    def remote():
+        pass
 
     monkeypatch.setattr(
         cli_module, "_entry_points", lambda: (EntryPointStub("remote", remote),)
     )
-    result, payload = invoke_json(["remote", "--max-output", value])
+    result, payload = invoke_json(["--max-output", value, "remote"])
     assert result.exit_code == ExitCode.USAGE
     assert "--max-output" in payload["error"]["message"]
 
 
 def test_max_output_equals_form_bounds_captured_plugin_output(monkeypatch):
     @click.command()
-    @remote_options
-    def noisy(config, timeout, max_output):
-        del config, timeout, max_output
+    def noisy():
         click.echo("abcdefghij", nl=False)
 
     monkeypatch.setattr(
         cli_module, "_entry_points", lambda: (EntryPointStub("noisy", noisy),)
     )
-    result, payload = invoke_json(["noisy", "--max-output=4"])
+    result, payload = invoke_json(["--max-output=4", "noisy"])
 
     assert result.exit_code == 0
+    assert payload["stdout"] == "ghij"
+    assert payload["stdout_bytes"] == 10
+    assert payload["stdout_truncated"] is True
+
+
+def test_root_max_output_bounds_command_error_output(monkeypatch):
+    @click.command()
+    def noisy():
+        click.echo("abcdefghij", nl=False)
+        raise click.UsageError("bad command")
+
+    monkeypatch.setattr(
+        cli_module, "_entry_points", lambda: (EntryPointStub("noisy", noisy),)
+    )
+
+    result, payload = invoke_json(["--max-output", "4", "noisy"])
+
+    assert result.exit_code == ExitCode.USAGE
+    assert payload["stdout"] == "ghij"
+    assert payload["stdout_bytes"] == 10
+    assert payload["stdout_truncated"] is True
+
+
+def test_root_max_output_bounds_unknown_command_discovery_output(monkeypatch):
+    def discover():
+        click.echo("abcdefghij", nl=False)
+        return ()
+
+    monkeypatch.setattr(cli_module, "_entry_points", discover)
+
+    result, payload = invoke_json(["--max-output", "4", "missing"])
+
+    assert result.exit_code == ExitCode.USAGE
+    assert payload["stdout"] == "ghij"
+    assert payload["stdout_bytes"] == 10
+    assert payload["stdout_truncated"] is True
+
+
+def test_root_max_output_bounds_plugin_load_output(monkeypatch):
+    class NoisyEntryPoint(EntryPointStub):
+        def load(self):
+            click.echo("abcdefghij", nl=False)
+            raise RuntimeError("broken")
+
+    monkeypatch.setattr(
+        cli_module, "_entry_points", lambda: (NoisyEntryPoint("broken"),)
+    )
+
+    result, payload = invoke_json(["--max-output", "4", "broken"])
+
+    assert result.exit_code == ExitCode.USAGE
     assert payload["stdout"] == "ghij"
     assert payload["stdout_bytes"] == 10
     assert payload["stdout_truncated"] is True
@@ -421,21 +501,33 @@ def test_format_equals_form_is_parsed_by_click():
     assert json.loads(result.output)["error"]["type"] == "UsageError"
 
 
-def test_remote_options_parse_consistently():
+def test_root_invocation_options_parse_consistently(monkeypatch):
     received = {}
 
     @click.command()
-    @remote_options
-    def command(config, timeout, max_output):
+    @click.pass_context
+    def command(ctx):
+        invocation = get_cli_context(ctx)
         received.update(
-            config=config,
-            timeout=timeout,
-            max_output=max_output,
+            config=invocation.config,
+            timeout=invocation.timeout,
+            max_output=invocation.max_output,
         )
 
+    monkeypatch.setattr(
+        cli_module, "_entry_points", lambda: (EntryPointStub("command", command),)
+    )
     result = CliRunner().invoke(
-        command,
-        ["--config", "custom.env", "--timeout", "1.5", "--max-output", "12"],
+        cli,
+        [
+            "--config",
+            "custom.env",
+            "--timeout",
+            "1.5",
+            "--max-output",
+            "12",
+            "command",
+        ],
     )
 
     assert result.exit_code == 0
@@ -444,6 +536,99 @@ def test_remote_options_parse_consistently():
         "timeout": 1.5,
         "max_output": 12,
     }
+
+
+def test_get_cli_context_rejects_uninitialized_root():
+    with click.Context(click.Command("command")) as ctx:
+        with pytest.raises(TypeError, match="not initialized"):
+            get_cli_context(ctx)
+
+
+def test_root_invocation_defaults_are_typed(monkeypatch):
+    received = {}
+
+    @click.command()
+    @click.pass_context
+    def command(ctx):
+        received["invocation"] = get_cli_context(ctx)
+
+    monkeypatch.setattr(
+        cli_module, "_entry_points", lambda: (EntryPointStub("command", command),)
+    )
+
+    result = CliRunner().invoke(cli, ["command"])
+
+    assert result.exit_code == ExitCode.SUCCESS
+    assert received["invocation"] == CLIContext()
+
+
+def test_root_config_is_lazy_for_plugin_commands(monkeypatch):
+    @click.command()
+    @click.pass_context
+    def command(ctx):
+        assert get_cli_context(ctx).config == Path("missing.env")
+
+    monkeypatch.setattr(
+        cli_module, "_entry_points", lambda: (EntryPointStub("command", command),)
+    )
+    monkeypatch.setattr(
+        cli_module,
+        "load_connection_config",
+        lambda config: pytest.fail(f"loaded config unexpectedly: {config}"),
+    )
+
+    result = CliRunner().invoke(cli, ["--config", "missing.env", "command"])
+
+    assert result.exit_code == ExitCode.SUCCESS
+
+
+def test_root_connection_options_reach_every_builtin(tmp_path, monkeypatch):
+    upload_source = tmp_path / "upload.txt"
+    upload_source.write_text("content", encoding="utf-8")
+    cases = (
+        ("ping", [], "pong"),
+        ("run", ["-c", "pass"], SimpleNamespace(ok=True, error=None)),
+        ("get", ["1"], 1),
+        (
+            "logs",
+            [],
+            RecentLogsSnapshot(text="", bytes=0, records=0, truncated=False),
+        ),
+        ("shell", ["-c", "true"], ShellResult(returncode=0)),
+        ("upload", [str(upload_source)], None),
+        ("download", ["remote.txt"], None),
+    )
+
+    for command, arguments, return_value in cases:
+        received = {}
+
+        def call(
+            config,
+            timeout,
+            operation,
+            _received=received,
+            _return_value=return_value,
+            **kwargs,
+        ):
+            del operation, kwargs
+            _received.update(config=config, timeout=timeout)
+            return _return_value
+
+        monkeypatch.setattr(cli_module, "_call_remote", call)
+        result = CliRunner().invoke(
+            cli,
+            [
+                "--config",
+                "selected.env",
+                "--timeout",
+                "3.5",
+                command,
+                *arguments,
+            ],
+        )
+
+        assert result.exit_code == ExitCode.SUCCESS
+        assert received == {"config": Path("selected.env"), "timeout": 3.5}
 
 
 def test_explicit_config_and_environment_override(tmp_path, monkeypatch):
@@ -1276,9 +1461,9 @@ async def test_console_run_and_get_persist_live_namespace(
         cli,
         [
             "--json",
-            "run",
             "--config",
             str(config),
+            "run",
             "--code",
             "console_live_value = 41\nprint('ready')",
         ],
@@ -1288,9 +1473,9 @@ async def test_console_run_and_get_persist_live_namespace(
         cli,
         [
             "--json",
-            "get",
             "--config",
             str(config),
+            "get",
             "console_live_value + 1",
         ],
     )
@@ -1332,9 +1517,9 @@ async def test_console_upload_and_download_files_and_directory(
         cli,
         [
             "--json",
-            "upload",
             "--config",
             str(config),
+            "upload",
             str(local_file),
             str(local_dir),
             ".",
@@ -1353,9 +1538,9 @@ async def test_console_upload_and_download_files_and_directory(
         cli,
         [
             "--json",
-            "download",
             "--config",
             str(config),
+            "download",
             "hello.txt",
             "assets",
             str(download_dir),
@@ -1401,7 +1586,7 @@ def test_logs_applies_cli_tail_limit_and_preserves_server_byte_count(monkeypatch
         ),
     )
 
-    _, payload = invoke_json(["logs", "--max-output", "2"])
+    _, payload = invoke_json(["--max-output", "2", "logs"])
 
     assert payload["text"] == "��"
     assert payload["bytes"] == 7
@@ -1518,9 +1703,9 @@ async def test_console_logs_diagnose_code_before_remote_failure(
         cli,
         [
             "--json",
-            "run",
             "--config",
             str(config),
+            "run",
             "--code",
             (
                 "import logging\n"
@@ -1532,7 +1717,7 @@ async def test_console_logs_diagnose_code_before_remote_failure(
     logs_result = await asyncio.to_thread(
         CliRunner().invoke,
         cli,
-        ["--json", "logs", "--config", str(config)],
+        ["--json", "--config", str(config), "logs"],
     )
 
     assert run_result.exit_code == ExitCode.REMOTE
@@ -1645,7 +1830,7 @@ def test_shell_json_captures_raw_streams_and_returncode(monkeypatch):
     install_fake_remote(monkeypatch, execute_shell=execute_shell)
 
     result, payload = invoke_json(
-        ["shell", "--max-output", "5", "-c", "command"],
+        ["--max-output", "5", "shell", "-c", "command"],
     )
 
     assert result.exit_code == ExitCode.SUCCESS
@@ -1758,7 +1943,7 @@ def test_shell_protocol_error_uses_shell_phase(monkeypatch):
     assert payload["error"]["phase"] == "shell_execution"
 
 
-def test_shell_help_describes_sources_and_remote_options():
+def test_shell_help_describes_sources_and_only_operation_options():
     result = CliRunner().invoke(cli, ["shell", "--help"])
 
     assert result.exit_code == ExitCode.SUCCESS
@@ -1767,7 +1952,9 @@ def test_shell_help_describes_sources_and_remote_options():
     assert "-c" in result.output
     assert "local script" in result.output
     assert "remote host" in result.output
-    assert "--max-output" in result.output
+    assert "--config" not in result.output
+    assert "--timeout" not in result.output
+    assert "--max-output" not in result.output
 
 
 def test_run_help_describes_file_inline_and_stdin_sources():
@@ -1801,9 +1988,9 @@ async def test_console_shell_reports_separate_streams_and_failure(
         cli,
         [
             "--json",
-            "shell",
             "--config",
             str(config),
+            "shell",
             "-c",
             "printf out; printf err >&2; exit 9",
         ],

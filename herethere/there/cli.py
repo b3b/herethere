@@ -295,6 +295,9 @@ class CLIContext:
     """Values selected by root-level CLI options."""
 
     output_format: str = "text"
+    config: Path | None = None
+    timeout: float | None = None
+    max_output: int = DEFAULT_MAX_OUTPUT
 
 
 @dataclass
@@ -311,39 +314,12 @@ def load_connection_config(config: str | Path | None = None) -> ConnectionConfig
     return ConnectionConfig.load(prefix="there", path=path)
 
 
-def remote_options(function=None, *, timeout_default=None):
-    """Add the options shared by commands which contact a remote target."""
-
-    def decorate(target):
-        options = (
-            click.option(
-                "--config",
-                type=click.Path(path_type=Path, dir_okay=False),
-                help="Connection config file (default: search for there.env).",
-            ),
-            click.option(
-                "--timeout",
-                default=timeout_default,
-                show_default=timeout_default is not None,
-                type=click.FloatRange(min=0.0, min_open=True),
-                help="Operation timeout in seconds.",
-            ),
-            click.option(
-                "--max-output",
-                default=DEFAULT_MAX_OUTPUT,
-                show_default=True,
-                type=click.IntRange(1, MAX_MAX_OUTPUT),
-                callback=_set_max_output,
-                help="Maximum retained bytes per output stream.",
-            ),
-        )
-        for option in reversed(options):
-            target = option(target)
-        return target
-
-    if function is None:
-        return decorate
-    return decorate(function)
+def get_cli_context(ctx: click.Context) -> CLIContext:
+    """Return the typed invocation context owned by the root command."""
+    invocation = ctx.find_root().obj
+    if not isinstance(invocation, CLIContext):
+        raise TypeError("root CLI context is not initialized")
+    return invocation
 
 
 def _entry_points() -> tuple[Any, ...]:
@@ -582,6 +558,24 @@ def _error_details(
 
 @click.group(cls=PluginGroup)
 @click.option(
+    "--config",
+    type=click.Path(path_type=Path, dir_okay=False),
+    help="Connection config file (default: search for there.env).",
+)
+@click.option(
+    "--timeout",
+    type=click.FloatRange(min=0.0, min_open=True),
+    help="Operation timeout in seconds.",
+)
+@click.option(
+    "--max-output",
+    default=DEFAULT_MAX_OUTPUT,
+    show_default=True,
+    type=click.IntRange(1, MAX_MAX_OUTPUT),
+    callback=_set_max_output,
+    help="Maximum retained bytes per output stream.",
+)
+@click.option(
     "--format",
     "output_format",
     type=click.Choice(("text", "json"), case_sensitive=False),
@@ -599,9 +593,21 @@ def _error_details(
     help="Shortcut for --format json.",
 )
 @click.pass_context
-def cli(ctx: click.Context, output_format: str, json_output: bool):
+def cli(
+    ctx: click.Context,
+    config: Path | None,
+    timeout: float | None,
+    max_output: int,
+    output_format: str,
+    json_output: bool,
+):
     """Run deterministic herethere commands."""
-    ctx.obj = CLIContext(output_format="json" if json_output else output_format)
+    ctx.obj = CLIContext(
+        output_format="json" if json_output else output_format,
+        config=config,
+        timeout=timeout,
+        max_output=max_output,
+    )
 
 
 def _validate_live_input(text: str, label: str) -> None:
@@ -735,29 +741,31 @@ def _call_remote(
 
 
 @cli.command("ping")
-@remote_options(timeout_default=DEFAULT_PING_TIMEOUT)
 @click.pass_context
-def ping_command(ctx, config, timeout, max_output):
+def ping_command(ctx):
     """Check whether the remote herethere server is ready."""
-    del max_output
+    invocation = get_cli_context(ctx)
 
     async def operation(client):
         return await client.ping()
 
     response = _call_remote(
-        config,
-        timeout,
+        invocation.config,
+        (
+            invocation.timeout
+            if invocation.timeout is not None
+            else DEFAULT_PING_TIMEOUT
+        ),
         operation,
         operation_phase="ping",
     )
-    if ctx.find_root().obj.output_format == "text":
+    if invocation.output_format == "text":
         click.echo(response)
         return None
     return {"response": response}
 
 
 @cli.command("run")
-@remote_options
 @click.option(
     "-c",
     "--code",
@@ -765,8 +773,10 @@ def ping_command(ctx, config, timeout, max_output):
     help="Execute inline Python code.",
 )
 @click.argument("file_path", metavar="[FILE]", required=False)
-def run_command(config, timeout, max_output, code_text, file_path):
+@click.pass_context
+def run_command(ctx, code_text, file_path):
     """Execute a local FILE, inline code, or stdin in the live namespace."""
+    invocation = get_cli_context(ctx)
     code = _load_text_source(
         file_path,
         code_text,
@@ -778,7 +788,7 @@ def run_command(config, timeout, max_output, code_text, file_path):
     async def operation(client):
         return await client.execute(code, stdout=sys.stdout, stderr=sys.stderr)
 
-    result = _call_remote(config, timeout, operation)
+    result = _call_remote(invocation.config, invocation.timeout, operation)
     if not result.ok:
         raise RemoteExecutionFailure(result.error)
 
@@ -793,12 +803,11 @@ def _strict_json_value(value):
 
 
 @cli.command("get")
-@remote_options
 @click.argument("expression")
 @click.pass_context
-def get_command(ctx, config, timeout, max_output, expression):
+def get_command(ctx, expression):
     """Get one Python expression value from the live namespace."""
-    del max_output
+    invocation = get_cli_context(ctx)
     try:
         ast.parse(expression, mode="eval")
     except SyntaxError as exc:
@@ -810,39 +819,39 @@ def get_command(ctx, config, timeout, max_output, expression):
     async def operation(client):
         return await client.get(expression)
 
-    value = _call_remote(config, timeout, operation)
-    if ctx.find_root().obj.output_format == "text":
+    value = _call_remote(invocation.config, invocation.timeout, operation)
+    if invocation.output_format == "text":
         click.echo(repr(value))
         return None
     return {"value": _strict_json_value(value)}
 
 
 @cli.command("logs")
-@remote_options
 @click.option(
     "--records",
     type=click.IntRange(1, DEFAULT_MAX_LOG_RECORDS),
     help="Return at most this many newest log records.",
 )
 @click.pass_context
-def logs_command(ctx, config, timeout, max_output, records):
+def logs_command(ctx, records):
     """Return a finite snapshot of recent remote Python logs."""
+    invocation = get_cli_context(ctx)
 
     async def operation(client):
         return await client.logs(max_records=records)
 
     snapshot = _call_remote(
-        config,
-        timeout,
+        invocation.config,
+        invocation.timeout,
         operation,
         operation_phase="log_retrieval",
     )
-    collector = BoundedTextCollector(max_output)
+    collector = BoundedTextCollector(invocation.max_output)
     collector.write(snapshot.text)
     text = collector.getvalue()
     truncated = snapshot.truncated or collector.truncated
 
-    if ctx.find_root().obj.output_format == "text":
+    if invocation.output_format == "text":
         click.echo(text, nl=False)
         return None
     return {
@@ -855,7 +864,6 @@ def logs_command(ctx, config, timeout, max_output, records):
 
 
 @cli.command("shell")
-@remote_options
 @click.option(
     "-c",
     "--command",
@@ -864,12 +872,13 @@ def logs_command(ctx, config, timeout, max_output, records):
 )
 @click.argument("file_path", metavar="[FILE]", required=False)
 @click.pass_context
-def shell_command(ctx, config, timeout, max_output, command_text, file_path):
+def shell_command(ctx, command_text, file_path):
     """Execute a local script using the remote platform shell.
 
     Use --command/-c for inline shell code, or '-' for local stdin.
     To execute a script already on the remote host, use -c './script.sh'.
     """
+    invocation = get_cli_context(ctx)
     command = _load_text_source(
         file_path,
         command_text,
@@ -880,7 +889,7 @@ def shell_command(ctx, config, timeout, max_output, command_text, file_path):
     )
     stdout = sys.stdout
     stderr = sys.stderr
-    if ctx.find_root().obj.output_format == "text":
+    if invocation.output_format == "text":
         group = cast(PluginGroup, ctx.find_root().command)
         stdout, stderr = group.invocation_streams()
 
@@ -892,8 +901,8 @@ def shell_command(ctx, config, timeout, max_output, command_text, file_path):
         )
 
     result = _call_remote(
-        config,
-        timeout,
+        invocation.config,
+        invocation.timeout,
         operation,
         operation_phase="shell_execution",
     )
@@ -932,20 +941,20 @@ def _raise_transfer_error(error):
 
 
 @cli.command("upload")
-@remote_options
 @click.argument(
     "paths",
     nargs=-1,
     required=True,
     metavar="LOCAL_PATH... [REMOTE_PATH]",
 )
-def upload_command(config, timeout, max_output, paths):
+@click.pass_context
+def upload_command(ctx, paths):
     """Upload files and directories recursively over SFTP.
 
     With one path, upload to the current remote SFTP directory. With multiple
     paths, the last path is the remote destination.
     """
-    del max_output
+    invocation = get_cli_context(ctx)
     local_paths, remote_path = _split_transfer_paths(paths, ".")
     _validate_upload_sources(local_paths)
 
@@ -956,8 +965,8 @@ def upload_command(config, timeout, max_output, paths):
             _raise_transfer_error(exc)
 
     _call_remote(
-        config,
-        timeout,
+        invocation.config,
+        invocation.timeout,
         operation,
         operation_phase="transfer",
     )
@@ -968,20 +977,20 @@ def upload_command(config, timeout, max_output, paths):
 
 
 @cli.command("download")
-@remote_options
 @click.argument(
     "paths",
     nargs=-1,
     required=True,
     metavar="REMOTE_PATH... [LOCAL_PATH]",
 )
-def download_command(config, timeout, max_output, paths):
+@click.pass_context
+def download_command(ctx, paths):
     """Download files and directories recursively over SFTP.
 
     With one path, download to the current local directory. With multiple
     paths, the last path is the local destination.
     """
-    del max_output
+    invocation = get_cli_context(ctx)
     remote_paths, local_path = _split_transfer_paths(paths, ".")
 
     async def operation(client):
@@ -991,8 +1000,8 @@ def download_command(config, timeout, max_output, paths):
             _raise_transfer_error(exc)
 
     _call_remote(
-        config,
-        timeout,
+        invocation.config,
+        invocation.timeout,
         operation,
         operation_phase="transfer",
     )
@@ -1021,9 +1030,9 @@ __all__ = (
     "ValueSerializationFailure",
     "cli",
     "get_command",
+    "get_cli_context",
     "logs_command",
     "load_connection_config",
-    "remote_options",
     "run_command",
     "shell_command",
     "download_command",

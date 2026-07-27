@@ -14,6 +14,16 @@ arguments and options accepted by a command:
 there COMMAND --help
 ```
 
+The command-line grammar is:
+
+```text
+there [ROOT OPTIONS] COMMAND [COMMAND OPTIONS] [ARGUMENTS]
+```
+
+Shared invocation options such as `--config`, `--timeout`, `--max-output`,
+`--format`, and `--json` must appear before the command name. Options belonging
+to a particular operation, such as `run --code`, remain after the command.
+
 ## Output format
 
 Commands produce readable text by default:
@@ -56,7 +66,7 @@ or tracebacks outside this object.
 
 ## Connecting to a target
 
-Commands which connect to a herethere target accept:
+The root command accepts these shared connection and output options:
 
 ```text
 --config PATH
@@ -67,7 +77,7 @@ Commands which connect to a herethere target accept:
 Use `--config` to select a specific connection file:
 
 ```console
-there --json COMMAND --config ./there.env
+there --json --config ./there.env COMMAND
 ```
 
 Without `--config`, herethere searches the current directory and its parents
@@ -96,14 +106,15 @@ is reported as a local I/O error.
 herethere response without executing code in the live application namespace:
 
 ```console
-there ping --config ./there.env
-there --json ping --config ./there.env
+there --config ./there.env ping
+there --json --config ./there.env ping
 ```
 
 Text mode prints `pong`. JSON mode returns it in the `response` field. This is
 a transport readiness check; it does not establish that an application's UI or
 application-specific state is ready. Ping has a 10-second total timeout by
-default; use `--timeout SECONDS` to override it.
+default; use `there --timeout SECONDS ping` to override it. Other commands have
+no total timeout by default.
 
 ## Running code in the live interpreter
 
@@ -114,7 +125,7 @@ there run app.py
 there run -
 there run --code "counter += 1"
 there run -c "print(counter)"
-there --json run --config ./there.env app.py
+there --json --config ./there.env run app.py
 ```
 
 Supply exactly one local file, `-` for local stdin, or `--code`/`-c` for inline
@@ -125,7 +136,7 @@ exceptions include their type, message, and bounded traceback.
 
 ```console
 there get "counter"
-there --json get --config ./there.env "app.root"
+there --json --config ./there.env get "app.root"
 ```
 
 Text mode prints the returned Python value. JSON-compatible results are returned
@@ -170,8 +181,8 @@ there upload local.py
 there upload local.py data remote-directory
 there download result.csv
 there download result.csv remote-directory ./downloads
-there --json upload --config ./there.env local.py .
-there --json download --config ./there.env result.csv ./result.csv
+there --json --config ./there.env upload local.py .
+there --json --config ./there.env download result.csv ./result.csv
 ```
 
 With one upload path, the remote destination defaults to `.`. With multiple
@@ -207,6 +218,31 @@ Missing or unreadable local sources and unwritable local destinations use exit
 code `5`. SFTP operation failures, including missing remote paths, use exit
 code `4`. A connection lost during transfer uses exit code `3`, and a transfer
 timeout uses exit code `124`. JSON mode reports these as structured errors.
+
+## Extending the CLI
+
+Commands registered in the `herethere.cli` entry-point group may be ordinary
+Click commands. A plugin which needs the shared invocation settings can use the
+root context helper:
+
+```python
+import click
+
+from herethere.there.cli import get_cli_context
+
+
+@click.command()
+@click.pass_context
+def inspect_target(ctx):
+    invocation = get_cli_context(ctx)
+    click.echo(invocation.config)
+```
+
+Invoke shared options before the plugin command:
+
+```console
+there --config ./there.env --json inspect-target
+```
 
 ## Exit codes
 
