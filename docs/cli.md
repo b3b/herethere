@@ -87,6 +87,9 @@ how many bytes of each output stream JSON mode retains. The default is 65536
 bytes and the maximum is 1048576 bytes. When output is larger, herethere keeps
 the end of the stream and sets the corresponding `*_truncated` field.
 
+Files and stdin used as command input are read as UTF-8 text. Unreadable input
+is reported as a local I/O error.
+
 ## Running code in the live interpreter
 
 `run` executes Python in the existing remote process and namespace:
@@ -95,12 +98,13 @@ the end of the stream and sets the corresponding `*_truncated` field.
 there run app.py
 there run -
 there run --code "counter += 1"
+there run -c "print(counter)"
 there --json run --config ./there.env app.py
 ```
 
-Supply exactly one file, `-` for UTF-8 code on stdin, or `--code`. Remote
-stdout and stderr are kept separate. A remote Python exception produces exit
-code `4`; JSON mode includes its Python type, message, and bounded traceback.
+Supply exactly one local file, `-` for local stdin, or `--code`/`-c` for inline
+Python. Remote stdout and stderr are kept separate. In JSON mode, Python
+exceptions include their type, message, and bounded traceback.
 
 `get` exposes the same expression operation as Jupyter's `%there get`:
 
@@ -115,6 +119,31 @@ Statements are rejected before connecting.
 
 When `there run` reports `ProtocolVersionError`, upgrade herethere on the remote
 target before retrying.
+
+## Running commands in the remote shell
+
+`shell` executes a local script using the remote platform shell:
+
+```console
+there shell deploy.sh
+there shell -
+there shell --command "uname -a"
+there shell -c "python --version"
+```
+
+Supply exactly one local file, `-` for local stdin, or `--command`/`-c` for
+inline shell code. Positional values are always local files; herethere reads
+the file locally and sends its contents without uploading it.
+
+To execute a script which already exists on the remote host, make that intent
+explicit as an inline command:
+
+```console
+there shell -c "./deploy.sh"
+```
+
+Text mode streams remote stdout and stderr separately. JSON mode also includes
+the remote `returncode`.
 
 ## Transferring files and directories
 

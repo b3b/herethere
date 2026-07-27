@@ -602,47 +602,60 @@ def _validate_live_input(text: str, label: str) -> None:
         )
 
 
-def _read_run_source(source: str | None, code_text: str | None) -> str:
-    if source is not None and code_text is not None:
-        raise click.UsageError("Exactly one code source is required.")
-    if source is None and code_text is None:
-        raise click.UsageError("Exactly one code source is required.")
-    if code_text is not None:
-        return code_text
-    if source == "-":
-        try:
-            return sys.stdin.read()
-        except (OSError, UnicodeError) as exc:
-            raise LocalIOError(f"Could not read stdin: {exc}") from exc
+def _read_utf8_stdin() -> str:
     try:
-        return Path(source).read_text(encoding="utf-8")
+        stdin_buffer = getattr(sys.stdin, "buffer", None)
+        if stdin_buffer is None:
+            return sys.stdin.read()
+        return stdin_buffer.read().decode("utf-8")
     except (OSError, UnicodeError) as exc:
-        raise LocalIOError(f"Could not read {source!r}: {exc}") from exc
+        raise LocalIOError(f"Could not read stdin as UTF-8: {exc}") from exc
 
 
-def _read_shell_source(source: str) -> str:
-    """Read one shell command argument or a UTF-8 script from stdin."""
-    if source != "-":
-        command = source
+def _load_text_source(
+    file_path: str | None,
+    inline_text: str | None,
+    *,
+    label: str,
+    inline_option: str,
+    byte_limit: int,
+    missing_file_hint: str | None = None,
+) -> str:
+    """Load and validate one local-file, stdin, or inline text input."""
+    if (file_path is None) == (inline_text is None):
+        raise click.UsageError(
+            f"Exactly one of FILE, '-', or {inline_option} is required."
+        )
+
+    local_input = inline_text is None
+    if inline_text is not None:
+        text = inline_text
+    elif not file_path:
+        raise click.UsageError(f"{label} must not be empty.")
+    elif file_path == "-":
+        text = _read_utf8_stdin()
     else:
         try:
-            command = sys.stdin.read()
+            text = Path(file_path).read_text(encoding="utf-8")
         except (OSError, UnicodeError) as exc:
-            raise LocalIOError(f"Could not read stdin: {exc}") from exc
-    if not command:
-        raise click.UsageError("Shell command must not be empty.")
+            message = f"Could not read {file_path!r} as UTF-8: {exc}"
+            if missing_file_hint is not None:
+                message = f"{message}. {missing_file_hint}"
+            raise LocalIOError(message) from exc
+
+    if not text:
+        raise click.UsageError(f"{label} must not be empty.")
     try:
-        size = len(command.encode("utf-8"))
+        size = len(text.encode("utf-8"))
     except UnicodeEncodeError as exc:
-        if source == "-":
-            raise LocalIOError(f"Could not decode stdin as UTF-8: {exc}") from exc
-        raise click.UsageError("Shell command must be valid UTF-8.") from exc
-    if size > MAX_SHELL_COMMAND_BYTES:
+        if local_input:
+            raise LocalIOError(f"Could not read input as UTF-8: {exc}") from exc
+        raise click.UsageError(f"{label} must be valid UTF-8.") from exc
+    if size > byte_limit:
         raise click.UsageError(
-            f"Shell command is too large "
-            f"({size} bytes > {MAX_SHELL_COMMAND_BYTES} bytes)."
+            f"{label} is too large ({size} bytes > {byte_limit} bytes)."
         )
-    return command
+    return text
 
 
 async def _run_remote_operation(
@@ -713,12 +726,22 @@ def _call_remote(
 
 @cli.command("run")
 @remote_options
-@click.option("--code", "code_text", help="Execute code supplied on the command line.")
-@click.argument("source", required=False)
-def run_command(config, timeout, max_output, code_text, source):
-    """Execute a UTF-8 file, stdin (`-`), or `--code` in the live namespace."""
-    code = _read_run_source(source, code_text)
-    _validate_live_input(code, "Python code")
+@click.option(
+    "-c",
+    "--code",
+    "code_text",
+    help="Execute inline Python code.",
+)
+@click.argument("file_path", metavar="[FILE]", required=False)
+def run_command(config, timeout, max_output, code_text, file_path):
+    """Execute a local FILE, inline code, or stdin in the live namespace."""
+    code = _load_text_source(
+        file_path,
+        code_text,
+        label="Python code",
+        inline_option="--code/-c",
+        byte_limit=MAX_CODE_BYTES,
+    )
 
     async def operation(client):
         return await client.execute(code, stdout=sys.stdout, stderr=sys.stderr)
@@ -801,11 +824,28 @@ def logs_command(ctx, config, timeout, max_output, records):
 
 @cli.command("shell")
 @remote_options
-@click.argument("source")
+@click.option(
+    "-c",
+    "--command",
+    "command_text",
+    help="Execute an inline shell command.",
+)
+@click.argument("file_path", metavar="[FILE]", required=False)
 @click.pass_context
-def shell_command(ctx, config, timeout, max_output, source):
-    """Execute one remote shell command or a UTF-8 script from stdin (`-`)."""
-    command = _read_shell_source(source)
+def shell_command(ctx, config, timeout, max_output, command_text, file_path):
+    """Execute a local script using the remote platform shell.
+
+    Use --command/-c for inline shell code, or '-' for local stdin.
+    To execute a script already on the remote host, use -c './script.sh'.
+    """
+    command = _load_text_source(
+        file_path,
+        command_text,
+        label="Shell input",
+        inline_option="--command/-c",
+        byte_limit=MAX_SHELL_COMMAND_BYTES,
+        missing_file_hint="Inline shell commands require --command/-c.",
+    )
     stdout = sys.stdout
     stderr = sys.stderr
     if ctx.find_root().obj.output_format == "text":

@@ -615,7 +615,8 @@ def test_json_without_command_has_empty_command_name():
     ("args", "input_text", "expected"),
     [
         (["run", "--code", "print(1)"], None, "print(1)"),
-        (["run", "-"], "print(2)", "print(2)"),
+        (["run", "-c", "print(2)"], None, "print(2)"),
+        (["run", "-"], "print(3)", "print(3)"),
     ],
 )
 def test_run_accepts_code_and_stdin(monkeypatch, args, input_text, expected):
@@ -667,11 +668,72 @@ def test_run_rejects_missing_or_conflicting_sources(args):
     assert "Exactly one" in payload["error"]["message"]
 
 
+@pytest.mark.parametrize("args", (["run", "--code", ""], ["run", ""]))
+def test_run_rejects_empty_sources(args):
+    result, payload = invoke_json(args)
+
+    assert result.exit_code == ExitCode.USAGE
+    assert payload["error"]["type"] == "UsageError"
+    assert "must not be empty" in payload["error"]["message"]
+
+
 def test_run_maps_local_file_error():
     result, payload = invoke_json(["run", "missing-app.py"])
 
     assert result.exit_code == ExitCode.LOCAL_IO
     assert payload["error"]["type"] == "LocalIOError"
+
+
+@pytest.mark.parametrize("command", ("run", "shell"))
+def test_commands_reject_empty_files(command, tmp_path):
+    source = tmp_path / "empty"
+    source.write_text("", encoding="utf-8")
+
+    result, payload = invoke_json([command, str(source)])
+
+    assert result.exit_code == ExitCode.USAGE
+    assert payload["error"]["type"] == "UsageError"
+    assert "must not be empty" in payload["error"]["message"]
+
+
+@pytest.mark.parametrize("command", ("run", "shell"))
+def test_commands_reject_empty_stdin(command):
+    result = CliRunner().invoke(cli, ["--json", command, "-"], input="")
+    payload = json.loads(result.output)
+
+    assert result.exit_code == ExitCode.USAGE
+    assert payload["error"]["type"] == "UsageError"
+    assert "must not be empty" in payload["error"]["message"]
+
+
+@pytest.mark.parametrize("command", ("run", "shell"))
+def test_commands_reject_invalid_utf8_files(command, tmp_path):
+    source = tmp_path / "invalid"
+    source.write_bytes(b"\xff")
+
+    result, payload = invoke_json([command, str(source)])
+
+    assert result.exit_code == ExitCode.LOCAL_IO
+    assert payload["error"]["type"] == "LocalIOError"
+    assert "UTF-8" in payload["error"]["message"]
+
+
+@pytest.mark.parametrize("command", ("run", "shell"))
+def test_commands_reject_invalid_utf8_stdin(command):
+    result = CliRunner().invoke(cli, ["--json", command, "-"], input=b"\xff")
+    payload = json.loads(result.output)
+
+    assert result.exit_code == ExitCode.LOCAL_IO
+    assert payload["error"]["type"] == "LocalIOError"
+    assert "UTF-8" in payload["error"]["message"]
+
+
+@pytest.mark.parametrize("command", ("run", "shell"))
+def test_commands_reject_extra_positional_arguments(command):
+    result, payload = invoke_json([command, "one", "two"])
+
+    assert result.exit_code == ExitCode.USAGE
+    assert payload["error"]["type"] == "UsageError"
 
 
 def test_run_maps_stdin_read_error(monkeypatch):
@@ -682,11 +744,46 @@ def test_run_maps_stdin_read_error(monkeypatch):
     monkeypatch.setattr(cli_module.sys, "stdin", BrokenInput())
 
     with pytest.raises(LocalIOError, match="broken input"):
-        cli_module._read_run_source("-", None)
+        cli_module._load_text_source(
+            "-",
+            None,
+            label="Python code",
+            inline_option="--code/-c",
+            byte_limit=cli_module.MAX_CODE_BYTES,
+        )
 
 
-def test_run_rejects_oversized_input():
-    result, payload = invoke_json(["run", "--code", "x" * (65536 + 1)])
+@pytest.mark.parametrize(
+    ("command", "inline_option"),
+    (("run", "--code"), ("shell", "--command")),
+)
+@pytest.mark.parametrize("mode", ("inline", "file", "stdin"))
+def test_commands_reject_oversized_input_before_connecting(
+    monkeypatch,
+    tmp_path,
+    command,
+    inline_option,
+    mode,
+):
+    oversized = "€" * 21846
+    source = tmp_path / f"{command}-{mode}"
+    input_text = None
+    if mode == "inline":
+        args = [command, inline_option, oversized]
+    elif mode == "file":
+        source.write_text(oversized, encoding="utf-8")
+        args = [command, str(source)]
+    else:
+        args = [command, "-"]
+        input_text = oversized
+
+    def fail(*args, **kwargs):
+        del args, kwargs
+        pytest.fail("remote operation called")
+
+    monkeypatch.setattr(cli_module, "_call_remote", fail)
+    result = CliRunner().invoke(cli, ["--json", *args], input=input_text)
+    payload = json.loads(result.output)
 
     assert result.exit_code == ExitCode.USAGE
     assert "too large" in payload["error"]["message"]
@@ -742,6 +839,19 @@ def test_get_rejects_non_expressions_without_contacting_remote(monkeypatch, expr
 
     assert result.exit_code == ExitCode.USAGE
     assert payload["error"]["type"] == "UsageError"
+
+
+def test_get_rejects_oversized_expression_before_connecting(monkeypatch):
+    def fail(*args, **kwargs):
+        del args, kwargs
+        pytest.fail("remote operation called")
+
+    monkeypatch.setattr(cli_module, "_call_remote", fail)
+
+    result, payload = invoke_json(["get", "x" * (65536 + 1)])
+
+    assert result.exit_code == ExitCode.USAGE
+    assert "too large" in payload["error"]["message"]
 
 
 def test_get_text_renders_python_repr(monkeypatch):
@@ -1356,11 +1466,14 @@ async def test_console_logs_diagnose_code_before_remote_failure(
 @pytest.mark.parametrize(
     ("args", "input_text", "expected"),
     [
-        (["shell", "printf hello"], None, "printf hello"),
+        (["shell", "--command", "printf long"], None, "printf long"),
+        (["shell", "-c", "printf short"], None, "printf short"),
         (["shell", "-"], "printf stdin", "printf stdin"),
     ],
 )
-def test_shell_accepts_argument_and_stdin(monkeypatch, args, input_text, expected):
+def test_shell_accepts_inline_command_and_stdin(
+    monkeypatch, args, input_text, expected
+):
     received = {}
 
     def execute_shell(command, stdout, stderr):
@@ -1385,6 +1498,62 @@ def test_shell_accepts_argument_and_stdin(monkeypatch, args, input_text, expecte
     assert result.stderr == "err"
 
 
+def test_shell_reads_positional_file_locally(monkeypatch, tmp_path):
+    script = tmp_path / "deploy.sh"
+    script.write_text("printf local-script", encoding="utf-8")
+    received = {}
+
+    def execute_shell(command, stdout, stderr):
+        del stdout, stderr
+        received["command"] = command
+        return ShellResult(returncode=0)
+
+    install_fake_remote(monkeypatch, execute_shell=execute_shell)
+
+    result = CliRunner().invoke(cli, ["shell", str(script)])
+
+    assert result.exit_code == ExitCode.SUCCESS
+    assert received["command"] == "printf local-script"
+
+
+def test_shell_executes_remote_script_path_through_inline_command(monkeypatch):
+    received = {}
+
+    def execute_shell(command, stdout, stderr):
+        del stdout, stderr
+        received["command"] = command
+        return ShellResult(returncode=0)
+
+    install_fake_remote(monkeypatch, execute_shell=execute_shell)
+
+    result = CliRunner().invoke(cli, ["shell", "-c", "./deploy.sh"])
+
+    assert result.exit_code == ExitCode.SUCCESS
+    assert received["command"] == "./deploy.sh"
+
+
+def test_shell_missing_file_is_local_io_with_inline_command_hint():
+    result, payload = invoke_json(["shell", "missing-deploy.sh"])
+
+    assert result.exit_code == ExitCode.LOCAL_IO
+    assert payload["error"]["type"] == "LocalIOError"
+    assert "--command/-c" in payload["error"]["message"]
+
+
+def test_shell_file_permission_failure_is_local_io(monkeypatch):
+    def fail_read_text(self, *, encoding):
+        assert encoding == "utf-8"
+        raise PermissionError(f"permission denied: {self}")
+
+    monkeypatch.setattr(Path, "read_text", fail_read_text)
+
+    result, payload = invoke_json(["shell", "deploy.sh"])
+
+    assert result.exit_code == ExitCode.LOCAL_IO
+    assert payload["error"]["type"] == "LocalIOError"
+    assert "permission denied" in payload["error"]["message"]
+
+
 def test_shell_json_captures_raw_streams_and_returncode(monkeypatch):
     def execute_shell(command, stdout, stderr):
         assert command == "command"
@@ -1397,7 +1566,7 @@ def test_shell_json_captures_raw_streams_and_returncode(monkeypatch):
     install_fake_remote(monkeypatch, execute_shell=execute_shell)
 
     result, payload = invoke_json(
-        ["shell", "--max-output", "5", "command"],
+        ["shell", "--max-output", "5", "-c", "command"],
     )
 
     assert result.exit_code == ExitCode.SUCCESS
@@ -1417,7 +1586,7 @@ def test_shell_nonzero_is_structured_remote_failure(monkeypatch, returncode):
         execute_shell=lambda command, stdout, stderr: ShellResult(returncode),
     )
 
-    result, payload = invoke_json(["shell", "exit"])
+    result, payload = invoke_json(["shell", "-c", "exit"])
 
     assert result.exit_code == ExitCode.REMOTE
     assert payload["ok"] is False
@@ -1434,7 +1603,9 @@ def test_shell_nonzero_is_structured_remote_failure(monkeypatch, returncode):
     "args",
     [
         ["shell"],
+        ["shell", "-c", ""],
         ["shell", ""],
+        ["shell", "deploy.sh", "-c", "true"],
         ["shell", "one", "two"],
     ],
 )
@@ -1453,7 +1624,13 @@ def test_shell_maps_stdin_read_error(monkeypatch):
     monkeypatch.setattr(cli_module.sys, "stdin", BrokenInput())
 
     with pytest.raises(LocalIOError, match="invalid UTF-8"):
-        cli_module._read_shell_source("-")
+        cli_module._load_text_source(
+            "-",
+            None,
+            label="Shell input",
+            inline_option="--command/-c",
+            byte_limit=cli_module.MAX_SHELL_COMMAND_BYTES,
+        )
 
 
 def test_shell_maps_surrogate_escaped_stdin_to_local_io(monkeypatch):
@@ -1463,25 +1640,30 @@ def test_shell_maps_surrogate_escaped_stdin_to_local_io(monkeypatch):
 
     monkeypatch.setattr(cli_module.sys, "stdin", SurrogateInput())
 
-    with pytest.raises(LocalIOError, match="decode stdin as UTF-8"):
-        cli_module._read_shell_source("-")
+    with pytest.raises(LocalIOError, match="read input as UTF-8"):
+        cli_module._load_text_source(
+            "-",
+            None,
+            label="Shell input",
+            inline_option="--command/-c",
+            byte_limit=cli_module.MAX_SHELL_COMMAND_BYTES,
+        )
 
 
-def test_shell_rejects_non_utf8_argument():
+def test_text_loader_rejects_non_utf8_inline_text():
     with pytest.raises(click.UsageError, match="valid UTF-8"):
-        cli_module._read_shell_source("\udcff")
+        cli_module._load_text_source(
+            None,
+            "\udcff",
+            label="Shell input",
+            inline_option="--command/-c",
+            byte_limit=cli_module.MAX_SHELL_COMMAND_BYTES,
+        )
 
 
 def test_invocation_streams_require_active_invocation():
     with pytest.raises(RuntimeError, match="not available"):
         cli.invocation_streams()
-
-
-def test_shell_rejects_oversized_input():
-    result, payload = invoke_json(["shell", "x" * 65537])
-
-    assert result.exit_code == ExitCode.USAGE
-    assert "too large" in payload["error"]["message"]
 
 
 def test_shell_protocol_error_uses_shell_phase(monkeypatch):
@@ -1491,7 +1673,7 @@ def test_shell_protocol_error_uses_shell_phase(monkeypatch):
 
     monkeypatch.setattr(cli_module.asyncio, "run", fail)
 
-    result, payload = invoke_json(["shell", "command"])
+    result, payload = invoke_json(["shell", "-c", "command"])
 
     assert result.exit_code == ExitCode.REMOTE
     assert payload["error"]["phase"] == "shell_execution"
@@ -1501,8 +1683,23 @@ def test_shell_help_describes_sources_and_remote_options():
     result = CliRunner().invoke(cli, ["shell", "--help"])
 
     assert result.exit_code == ExitCode.SUCCESS
-    assert "stdin (`-`)" in result.output
+    assert "Usage: cli shell [OPTIONS] [FILE]" in result.output
+    assert "--command" in result.output
+    assert "-c" in result.output
+    assert "local script" in result.output
+    assert "remote host" in result.output
     assert "--max-output" in result.output
+
+
+def test_run_help_describes_file_inline_and_stdin_sources():
+    result = CliRunner().invoke(cli, ["run", "--help"])
+
+    assert result.exit_code == ExitCode.SUCCESS
+    assert "Usage: cli run [OPTIONS] [FILE]" in result.output
+    assert "--code" in result.output
+    assert "-c" in result.output
+    assert "local FILE" in result.output
+    assert "stdin" in result.output
 
 
 @pytest.mark.asyncio
@@ -1528,6 +1725,7 @@ async def test_console_shell_reports_separate_streams_and_failure(
             "shell",
             "--config",
             str(config),
+            "-c",
             "printf out; printf err >&2; exit 9",
         ],
     )
