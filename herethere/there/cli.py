@@ -322,6 +322,12 @@ def get_cli_context(ctx: click.Context) -> CLIContext:
     return invocation
 
 
+def _text_streams(ctx: click.Context) -> tuple[TextIO, TextIO]:
+    """Return stdout and stderr outside the root command's JSON capture."""
+    group = cast(PluginGroup, ctx.find_root().command)
+    return group.invocation_streams()
+
+
 def _entry_points() -> tuple[Any, ...]:
     try:
         return tuple(metadata.entry_points(group=PLUGIN_GROUP))
@@ -454,6 +460,7 @@ class PluginGroup(click.Group):
         complete_var: str | None,
         extra: dict[str, Any],
     ) -> _CapturedInvocation:
+        """Invoke Click while collecting output for a possible JSON envelope."""
         self._invocation_stdout = sys.stdout
         self._invocation_stderr = sys.stderr
         captured = _CapturedInvocation(
@@ -481,7 +488,7 @@ class PluginGroup(click.Group):
         return captured
 
     def invocation_streams(self) -> tuple[TextIO, TextIO]:
-        """Return the output streams outside this invocation's capture."""
+        """Return the saved streams used for live, unbounded text output."""
         if self._invocation_stdout is None or self._invocation_stderr is None:
             raise RuntimeError("CLI invocation streams are not available.")
         return self._invocation_stdout, self._invocation_stderr
@@ -785,8 +792,13 @@ def run_command(ctx, code_text, file_path):
         byte_limit=MAX_CODE_BYTES,
     )
 
+    stdout = sys.stdout
+    stderr = sys.stderr
+    if invocation.output_format == "text":
+        stdout, stderr = _text_streams(ctx)
+
     async def operation(client):
-        return await client.execute(code, stdout=sys.stdout, stderr=sys.stderr)
+        return await client.execute(code, stdout=stdout, stderr=stderr)
 
     result = _call_remote(invocation.config, invocation.timeout, operation)
     if not result.ok:
@@ -821,7 +833,8 @@ def get_command(ctx, expression):
 
     value = _call_remote(invocation.config, invocation.timeout, operation)
     if invocation.output_format == "text":
-        click.echo(repr(value))
+        stdout, _ = _text_streams(ctx)
+        click.echo(repr(value), file=stdout)
         return None
     return {"value": _strict_json_value(value)}
 
@@ -890,8 +903,7 @@ def shell_command(ctx, command_text, file_path):
     stdout = sys.stdout
     stderr = sys.stderr
     if invocation.output_format == "text":
-        group = cast(PluginGroup, ctx.find_root().command)
-        stdout, stderr = group.invocation_streams()
+        stdout, stderr = _text_streams(ctx)
 
     async def operation(client):
         return await client.execute_shell(

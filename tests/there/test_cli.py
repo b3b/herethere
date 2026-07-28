@@ -1081,6 +1081,24 @@ def test_run_json_captures_output_and_remote_exception(monkeypatch):
     }
 
 
+def test_run_text_output_is_not_truncated(monkeypatch):
+    def execute(code, stdout, stderr):
+        del code
+        stdout.write("abcdefghij")
+        stderr.write("0123456789")
+        return SimpleNamespace(ok=True, error=None)
+
+    install_fake_remote(monkeypatch, execute=execute)
+    result = CliRunner().invoke(
+        cli,
+        ["--max-output", "4", "run", "--code", "pass"],
+    )
+
+    assert result.exit_code == ExitCode.SUCCESS
+    assert result.stdout == "abcdefghij"
+    assert result.stderr == "0123456789"
+
+
 def test_get_returns_decoded_json_value(monkeypatch):
     def get(expression):
         assert expression == "answer"

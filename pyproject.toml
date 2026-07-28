@@ -35,7 +35,7 @@ classifiers = [
 ]
 dependencies = [
     "asyncssh>=2.17,<3",
-    "click",
+    "click>=8",
     "python-dotenv",
 ]
 

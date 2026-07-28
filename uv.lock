@@ -944,7 +944,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "asyncssh", specifier = ">=2.17,<3" },
-    { name = "click" },
+    { name = "click", specifier = ">=8" },
     { name = "ipython", marker = "extra == 'magic'" },
     { name = "ipywidgets", marker = "extra == 'magic'" },
     { name = "python-dotenv" },
