@@ -19,8 +19,9 @@ herethere
 Run Python interactively inside live apps and devices.
 
 ``herethere`` starts a small SSH-backed server inside a Python process, then
-lets you connect from another Python session or Jupyter notebook to inspect,
-modify, and interact with a namespace in that running process.
+lets you connect from the ``there`` CLI, another Python session, or a Jupyter
+notebook to inspect, modify, and interact with the namespace of that running
+process.
 
 It was created for workflows where Python is running inside an app, device,
 or environment that is awkward to interact with directly.
@@ -30,7 +31,7 @@ and other cases where logs or a separate remote shell are not enough.
 
 ``herethere`` is based on the `AsyncSSH <https://github.com/ronf/asyncssh>`_
 library. AsyncSSH provides the SSH toolkit; ``herethere`` adds a small
-Python and Jupyter workflow layer on top.
+Python, CLI, and Jupyter workflow layer on top.
 
 :Code repository: https://github.com/b3b/herethere
 :Documentation: https://herethere.me/library
@@ -38,12 +39,13 @@ Python and Jupyter workflow layer on top.
 Features
 --------
 
-* Execute Python snippets inside a live target process namespace.
-* Connect from Python code or from Jupyter notebooks with ``%connect-there``
-  and ``%%there``.
+* Execute Python snippets inside the namespace of a live target process.
+* Connect using the ``there`` CLI, Python code, or Jupyter notebooks with
+  ``%connect-there`` and ``%%there``.
+* Retrieve values, view logs, run shell commands, and transfer files.
+* Produce structured JSON output for scripts and coding agents.  
 * Use SSH authentication and encrypted transport through AsyncSSH.
-* Run shell commands and upload files, depending on server configuration.
-* Generate reviewable code cells from natural-language requests with
+* Generate reviewable notebook cells from natural-language requests with
   ``%%there ai``.
 
 Installation
@@ -78,6 +80,22 @@ Start ``herethere`` inside the Python process you want to interact with.
 
    await start_server(ServerConfig.load(prefix="here"), namespace=globals())
 
+Terminal client
+~~~~~~~~~~~~~~~
+
+Run code or retrieve a value from the target process:
+
+.. code-block:: console
+
+   there run --code "state['speed'] = 3"
+   there get "state"
+
+Use structured output for scripts and coding agents:
+
+.. code-block:: console
+
+   there --json get "state"
+
 Jupyter notebook / client
 ~~~~~~~~~~~~~~~~~~~~~~~~~
 
@@ -99,6 +117,17 @@ state while the target process keeps running:
    state["speed"] = 3
    print(state)
 
+Agent skill
+-----------
+
+``herethere`` bundles an
+`agent skill <https://github.com/b3b/herethere/tree/master/herethere/.agents/skills/there-cli>`_
+for using the ``there`` CLI. Install it for your project with
+`Library Skills <https://github.com/tiangolo/library-skills>`_:
+
+.. code-block:: console
+
+   uvx library-skills
 
 Trust model
 -----------

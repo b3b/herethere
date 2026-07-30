@@ -1,6 +1,19 @@
 Changelog
 =========
 
+0.3.0
+-----
+
+This release adds a standalone ``there`` command-line client for users and
+coding agents.
+
+* Added ``ping``, ``run``, ``get``, ``logs``, ``shell``, ``upload``, and
+  ``download`` commands
+* Added structured JSON output with bounded capture and stable exit codes
+* Added configurable operation timeouts
+* Added support for CLI command plugins
+* Added a bundled ``there-cli`` agent skill
+
 0.2.3
 -----
 
