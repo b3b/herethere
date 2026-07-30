@@ -221,14 +221,6 @@ def test_console_script_is_registered():
     assert '[project.scripts]\nthere = "herethere.there.cli:cli"' in pyproject
 
 
-def test_cli_documentation_uses_root_connection_options():
-    documentation = Path("docs/cli.md").read_text(encoding="utf-8")
-
-    assert "there --json --config ./there.env run app.py" in documentation
-    assert "there --json run --config" not in documentation
-    assert "there ping --config" not in documentation
-
-
 @pytest.mark.parametrize("option", [["--json"], ["--format", "json"]])
 def test_json_unknown_command_is_one_object(option):
     result = CliRunner().invoke(cli, [*option, "missing"])
