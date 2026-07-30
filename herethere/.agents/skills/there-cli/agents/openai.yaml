@@ -1,0 +1,4 @@
+interface:
+  display_name: "Use there CLI"
+  short_description: "Run code and commands on herethere targets"
+  default_prompt: "Use $there-cli to inspect and operate this remote herethere target safely."

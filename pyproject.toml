@@ -77,6 +77,11 @@ version = { attr = "herethere.version.__version__" }
 include = ["herethere*"]
 
 [tool.setuptools.package-data]
+"herethere" = [
+    ".agents/skills/there-cli/SKILL.md",
+    ".agents/skills/there-cli/agents/openai.yaml",
+    ".agents/skills/there-cli/references/*.md",
+]
 "herethere.there.ai" = ["prompts/*.md"]
 
 [tool.pytest.ini_options]
