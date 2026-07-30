@@ -184,7 +184,7 @@ def test_ping_timeout_uses_ping_phase(monkeypatch):
     monkeypatch.setattr(cli_module, "Client", ClientStub)
     monkeypatch.setattr(cli_module, "load_connection_config", lambda config: object())
 
-    result, payload = invoke_json(["--timeout", "0.001", "ping"])
+    result, payload = invoke_json(["--timeout", "0.1", "ping"])
 
     assert result.exit_code == ExitCode.TIMEOUT
     assert payload["error"]["phase"] == "ping"
