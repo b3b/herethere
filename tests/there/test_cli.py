@@ -830,6 +830,23 @@ def test_cli_main_non_standalone_returns_expected_exit_code(monkeypatch, capsys)
     assert capsys.readouterr().err == "Error: denied\n"
 
 
+def test_cli_main_standalone_discards_successful_command_result(monkeypatch, capsys):
+    @click.command()
+    def successful():
+        return {"uploaded": True}
+
+    monkeypatch.setattr(
+        cli_module,
+        "_entry_points",
+        lambda: (EntryPointStub("successful", successful),),
+    )
+
+    result = cli.main(["successful"])
+
+    assert result is None
+    assert capsys.readouterr().out == ""
+
+
 def test_json_main_non_standalone_returns_exit_code(capsys):
     result = cli.main(["--json", "missing"], standalone_mode=False)
     payload = json.loads(capsys.readouterr().out)

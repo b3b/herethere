@@ -498,7 +498,7 @@ def _finish_text_mode(
     error: Exception | None, result: Any, standalone_mode: bool
 ) -> Any:
     if error is None:
-        return result
+        return None if standalone_mode else result
     if isinstance(error, click.ClickException):
         error.show()
         exit_code = error.exit_code
