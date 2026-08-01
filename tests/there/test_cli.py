@@ -1034,32 +1034,21 @@ def test_run_maps_stdin_read_error(monkeypatch):
             None,
             label="Python code",
             inline_option="--code/-c",
-            byte_limit=cli_module.MAX_CODE_BYTES,
         )
 
 
-@pytest.mark.parametrize(
-    ("command", "inline_option"),
-    (("run", "--code"), ("shell", "--command")),
-)
 @pytest.mark.parametrize("mode", ("inline", "file", "stdin"))
-def test_commands_reject_oversized_input_before_connecting(
-    monkeypatch,
-    tmp_path,
-    command,
-    inline_option,
-    mode,
-):
+def test_shell_rejects_oversized_input_before_connecting(monkeypatch, tmp_path, mode):
     oversized = "€" * 21846
-    source = tmp_path / f"{command}-{mode}"
+    source = tmp_path / f"shell-{mode}"
     input_text = None
     if mode == "inline":
-        args = [command, inline_option, oversized]
+        args = ["shell", "--command", oversized]
     elif mode == "file":
         source.write_text(oversized, encoding="utf-8")
-        args = [command, str(source)]
+        args = ["shell", str(source)]
     else:
-        args = [command, "-"]
+        args = ["shell", "-"]
         input_text = oversized
 
     def fail(*args, **kwargs):
@@ -1072,6 +1061,34 @@ def test_commands_reject_oversized_input_before_connecting(
 
     assert result.exit_code == ExitCode.USAGE
     assert "too large" in payload["error"]["message"]
+
+
+@pytest.mark.parametrize("mode", ("inline", "file", "stdin"))
+def test_run_accepts_input_larger_than_64_kib(monkeypatch, tmp_path, mode):
+    code = "#" * (64 * 1024) + "\nlarge_input_complete = True"
+    source = tmp_path / f"run-{mode}.py"
+    input_text = None
+    if mode == "inline":
+        args = ["run", "--code", code]
+    elif mode == "file":
+        source.write_text(code, encoding="utf-8")
+        args = ["run", str(source)]
+    else:
+        args = ["run", "-"]
+        input_text = code
+
+    received = {}
+
+    def execute(remote_code, stdout, stderr):
+        del stdout, stderr
+        received["code"] = remote_code
+        return SimpleNamespace(ok=True, error=None)
+
+    install_fake_remote(monkeypatch, execute=execute)
+    result = CliRunner().invoke(cli, ["--json", *args], input=input_text)
+
+    assert result.exit_code == ExitCode.SUCCESS
+    assert received["code"] == code
 
 
 def test_run_json_captures_output_and_remote_exception(monkeypatch):
@@ -1181,17 +1198,20 @@ def test_get_rejects_non_expressions_without_contacting_remote(monkeypatch, expr
     assert payload["error"]["type"] == "UsageError"
 
 
-def test_get_rejects_oversized_expression_before_connecting(monkeypatch):
-    def fail(*args, **kwargs):
-        del args, kwargs
-        pytest.fail("remote operation called")
+def test_get_accepts_expression_larger_than_64_kib(monkeypatch):
+    expression = "x" * (64 * 1024 + 1)
+    received = {}
 
-    monkeypatch.setattr(cli_module, "_call_remote", fail)
+    def get(remote_expression):
+        received["expression"] = remote_expression
+        return 42
 
-    result, payload = invoke_json(["get", "x" * (65536 + 1)])
+    install_fake_remote(monkeypatch, get=get)
+    result, payload = invoke_json(["get", expression])
 
-    assert result.exit_code == ExitCode.USAGE
-    assert "too large" in payload["error"]["message"]
+    assert result.exit_code == ExitCode.SUCCESS
+    assert payload["value"] == 42
+    assert received["expression"] == expression
 
 
 def test_get_text_renders_python_repr(monkeypatch):

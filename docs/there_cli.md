@@ -130,7 +130,8 @@ there --json --config ./there.env run app.py
 
 Supply exactly one local file, `-` for local stdin, or `--code`/`-c` for inline
 Python. Remote stdout and stderr are kept separate. In JSON mode, Python
-exceptions include their type, message, and bounded traceback.
+exceptions include their type, message, and bounded traceback. Python input is
+read through EOF and has no application-level size limit.
 
 `get` exposes the same expression operation as Jupyter's `%there get`:
 

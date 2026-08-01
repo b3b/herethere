@@ -17,6 +17,7 @@ from herethere.everywhere.commands import (
     BACKGROUND_EXECUTE_COMMAND,
     BACKGROUND_VALUE_COMMAND,
     CODE_COMMAND,
+    EXECUTE_COMMAND,
     PING_COMMAND,
     RECENT_LOGS_COMMAND,
     SHELL_COMMAND,
@@ -30,6 +31,7 @@ from herethere.everywhere.recent_logs import (
 from herethere.everywhere.shell import SHELL_PROTOCOL_VERSION
 from herethere.everywhere.values import RemoteValueError, loads_value
 from herethere.here.server import (
+    MAX_RECENT_LOGS_REQUEST_BYTES,
     RunningServer,
     SSHServerHere,
     _decode_recent_logs_request,
@@ -747,6 +749,48 @@ async def test_structured_execute_reports_remote_exception(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "command",
+    (EXECUTE_COMMAND, BACKGROUND_EXECUTE_COMMAND),
+)
+async def test_execute_commands_read_input_larger_than_64_kib_through_eof(
+    server_instance,
+    connection_config,
+    command,
+):
+    code = "#" * (64 * 1024) + "\nlarge_run_input_complete = True"
+    async with asyncssh.connect(**connection_config.asdict, known_hosts=None) as conn:
+        result = await conn.run(command, check=True, input=code)
+        value_result = await conn.run(
+            VALUE_COMMAND,
+            check=True,
+            input="large_run_input_complete",
+        )
+
+    events = [json.loads(line) for line in result.stdout.splitlines()]
+    assert events[-1] == {"type": "result", "ok": True}
+    assert loads_value(value_result.stdout) is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "command",
+    (VALUE_COMMAND, BACKGROUND_VALUE_COMMAND),
+)
+async def test_value_commands_read_input_larger_than_64_kib_through_eof(
+    server_instance,
+    connection_config,
+    command,
+):
+    value = "x" * (64 * 1024)
+    expression = f"len({value!r})"
+    async with asyncssh.connect(**connection_config.asdict, known_hosts=None) as conn:
+        result = await conn.run(command, check=True, input=expression)
+
+    assert loads_value(result.stdout) == len(value)
+
+
+@pytest.mark.asyncio
 async def test_background_execute_discards_output_and_runs_in_worker(
     server_instance, connection_config
 ):
@@ -961,6 +1005,19 @@ async def test_recent_logs_command_rejects_invalid_request(
 
     assert result.stdout == ""
     assert "Invalid recent-logs request" in result.stderr
+
+
+@pytest.mark.asyncio
+async def test_recent_logs_command_rejects_oversized_request(
+    server_instance,
+    connection_config,
+):
+    request = " " * (MAX_RECENT_LOGS_REQUEST_BYTES + 1)
+    async with asyncssh.connect(**connection_config.asdict, known_hosts=None) as conn:
+        result = await conn.run(RECENT_LOGS_COMMAND, input=request, check=True)
+
+    assert result.stdout == ""
+    assert "Invalid recent-logs request: request is too large" in result.stderr
 
 
 @pytest.mark.asyncio

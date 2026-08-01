@@ -31,7 +31,6 @@ from herethere.there.client import (
 
 DEFAULT_MAX_OUTPUT = 64 * 1024
 MAX_MAX_OUTPUT = 1024 * 1024
-MAX_CODE_BYTES = 64 * 1024
 DEFAULT_PING_TIMEOUT = 10.0
 PLUGIN_GROUP = "herethere.cli"
 
@@ -617,14 +616,6 @@ def cli(
     )
 
 
-def _validate_live_input(text: str, label: str) -> None:
-    size = len(text.encode("utf-8"))
-    if size > MAX_CODE_BYTES:
-        raise click.UsageError(
-            f"{label} is too large ({size} bytes > {MAX_CODE_BYTES} bytes)."
-        )
-
-
 def _read_utf8_stdin() -> str:
     try:
         stdin_buffer = getattr(sys.stdin, "buffer", None)
@@ -641,7 +632,7 @@ def _load_text_source(
     *,
     label: str,
     inline_option: str,
-    byte_limit: int,
+    byte_limit: int | None = None,
     missing_file_hint: str | None = None,
 ) -> str:
     """Load and validate one local-file, stdin, or inline text input."""
@@ -674,7 +665,7 @@ def _load_text_source(
         if local_input:
             raise LocalIOError(f"Could not read input as UTF-8: {exc}") from exc
         raise click.UsageError(f"{label} must be valid UTF-8.") from exc
-    if size > byte_limit:
+    if byte_limit is not None and size > byte_limit:
         raise click.UsageError(
             f"{label} is too large ({size} bytes > {byte_limit} bytes)."
         )
@@ -797,7 +788,6 @@ def run_command(ctx, background, code_text, file_path):
         code_text,
         label="Python code",
         inline_option="--code/-c",
-        byte_limit=MAX_CODE_BYTES,
     )
 
     stdout = sys.stdout
@@ -848,7 +838,6 @@ def get_command(ctx, background, expression):
         raise click.UsageError(
             "EXPRESSION must be exactly one Python expression."
         ) from exc
-    _validate_live_input(expression, "Expression")
 
     async def operation(client):
         if background:

@@ -44,8 +44,9 @@ from herethere.everywhere.values import dumps_error, dumps_value
 from herethere.here.config import ServerConfig
 from herethere.here.shell import handle_shell_command
 
-MAX_COMMAND_LENGTH = 65536  # 65537
 CONNECTION_CLOSE_TIMEOUT = 1.0
+MAX_RECENT_LOGS_REQUEST_BYTES = 64 * 1024
+RECENT_LOGS_READ_CHUNK_SIZE = 4096
 
 
 class _DiscardOutput:
@@ -68,7 +69,7 @@ async def handle_code_command(process: asyncssh.SSHServerProcess, namespace: dic
     """Handler for SSH command 'code': execute code in the main thread.
     Blocks main thread execution.
     """
-    data = await process.stdin.read(MAX_COMMAND_LENGTH)
+    data = await process.stdin.read()
     runcode(data, stdout=process.stdout, stderr=process.stderr, namespace=namespace)
 
 
@@ -79,7 +80,7 @@ async def handle_background_code_command(
     Do not blocks main thread execution.
     """
     server: SSHServerHere = process.channel.get_connection().get_owner()
-    data = await process.stdin.read(MAX_COMMAND_LENGTH)
+    data = await process.stdin.read()
     await server.run_in_executor(
         runcode,
         code=data,
@@ -98,7 +99,7 @@ async def maybe_await(value):
 
 async def handle_value_command(process: asyncssh.SSHServerProcess, namespace: dict):
     """Handler for SSH command 'value': evaluate and return one Python value."""
-    data = await process.stdin.read(MAX_COMMAND_LENGTH)
+    data = await process.stdin.read()
 
     try:
         with redirect_output(stdout=StringIO(), stderr=StringIO()):
@@ -125,7 +126,7 @@ async def handle_background_value_command(
 ):
     """Evaluate and return one Python value from an executor worker."""
     server: SSHServerHere = process.channel.get_connection().get_owner()
-    data = await process.stdin.read(MAX_COMMAND_LENGTH)
+    data = await process.stdin.read()
 
     try:
         result = await server.run_in_executor(
@@ -155,7 +156,7 @@ def _write_execute_result(process: asyncssh.SSHServerProcess, error) -> None:
 
 async def handle_execute_command(process: asyncssh.SSHServerProcess, namespace: dict):
     """Execute code and return JSON-lines output events plus a final status."""
-    data = await process.stdin.read(MAX_COMMAND_LENGTH)
+    data = await process.stdin.read()
     error = execute_live(
         data,
         namespace,
@@ -170,7 +171,7 @@ async def handle_background_execute_command(
 ):
     """Execute structured Python code silently in an executor worker."""
     server: SSHServerHere = process.channel.get_connection().get_owner()
-    data = await process.stdin.read(MAX_COMMAND_LENGTH)
+    data = await process.stdin.read()
     output = _DiscardOutput()
     error = await server.run_in_executor(
         execute_live,
@@ -188,13 +189,28 @@ async def handle_recent_logs_command(
     recent_logs: RecentLogHandler,
 ):
     """Return a finite snapshot of buffered Python log records."""
-    request_text = await process.stdin.read(MAX_COMMAND_LENGTH)
     try:
+        request_text = await _read_recent_logs_request(process.stdin)
         max_records = _decode_recent_logs_request(request_text)
     except (TypeError, ValueError) as exc:
         process.stderr.write(f"Invalid recent-logs request: {exc}")
         return
     write_event(process.stdout, recent_logs.snapshot(max_records).asdict())
+
+
+async def _read_recent_logs_request(reader) -> str:
+    """Read one bounded recent-logs control request through EOF."""
+    chunks = []
+    size = 0
+    while chunk := await reader.read(RECENT_LOGS_READ_CHUNK_SIZE):
+        size += len(chunk.encode("utf-8"))
+        if size > MAX_RECENT_LOGS_REQUEST_BYTES:
+            raise ValueError(
+                "request is too large "
+                f"({size} bytes > {MAX_RECENT_LOGS_REQUEST_BYTES} bytes)"
+            )
+        chunks.append(chunk)
+    return "".join(chunks)
 
 
 def _decode_recent_logs_request(request_text: str) -> int | None:

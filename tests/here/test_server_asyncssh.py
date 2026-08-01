@@ -2,7 +2,6 @@ import asyncssh
 import pytest
 
 from herethere.here.server import (
-    MAX_COMMAND_LENGTH,
     SSHServerHere,
     handle_client,
 )
@@ -90,7 +89,7 @@ async def test_handle_client_configures_terminal_mode_before_reading_pty_input()
     assert process.events == [
         ("set_echo", False),
         ("set_line_mode", True),
-        ("read", MAX_COMMAND_LENGTH),
+        ("read", -1),
     ]
     assert process.stdout.written == "pong\n"
     assert process.stderr.written == ""
@@ -103,7 +102,7 @@ async def test_handle_client_accepts_missing_namespace_and_non_pty_input():
 
     await handle_client(process, namespace=None)
 
-    assert process.events == [("read", MAX_COMMAND_LENGTH)]
+    assert process.events == [("read", -1)]
     assert process.stdout.written == "pong\n"
     assert process.exit_status == 0
 

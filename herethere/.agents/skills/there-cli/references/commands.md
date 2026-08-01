@@ -95,9 +95,8 @@ there --json run --background --code "perform_expensive_work()"
 ```
 
 Supply exactly one local file, local stdin (`-`), or inline code (`--code` /
-`-c`). The maximum input is 64 KiB. A `ProtocolVersionError` means the remote
-herethere server is too old for the operation; report the mismatch rather than
-blindly retrying.
+`-c`). A `ProtocolVersionError` means the remote herethere server is too old for
+the operation; report the mismatch rather than blindly retrying.
 
 Background `run` remains attached and executes in a server worker thread. It
 discards user stdout and stderr but retains success, exception, traceback, and
