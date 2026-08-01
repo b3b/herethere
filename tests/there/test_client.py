@@ -8,6 +8,8 @@ import asyncssh
 import pytest
 
 from herethere.everywhere.commands import (
+    BACKGROUND_EXECUTE_COMMAND,
+    BACKGROUND_VALUE_COMMAND,
     PING_COMMAND,
     RECENT_LOGS_COMMAND,
     SHELL_COMMAND,
@@ -227,6 +229,24 @@ async def test_structured_execute_and_get_share_live_namespace(there):
     assert execution.ok
     assert execution.error is None
     assert out.getvalue() == "created\n"
+    assert err.getvalue() == ""
+    assert value == 42
+
+
+@pytest.mark.asyncio
+async def test_background_execute_and_get_share_live_namespace(there):
+    out = StringIO()
+    err = StringIO()
+
+    execution = await there.execute_background(
+        "background_client_value = 40\nprint('created')",
+        stdout=out,
+        stderr=err,
+    )
+    value = await there.get_background("background_client_value + 2")
+
+    assert execution.ok
+    assert out.getvalue() == ""
     assert err.getvalue() == ""
     assert value == 42
 
@@ -558,6 +578,35 @@ async def test_get_uses_value_command_and_deserializes_result(mocker):
 
 
 @pytest.mark.asyncio
+async def test_get_background_uses_versioned_command(mocker):
+    process = mocker.Mock()
+    process.stdin = mocker.Mock()
+    process.stdout = ReaderOnce(dumps_value(42) + "\n")
+    process.wait = mocker.AsyncMock()
+
+    client = Client()
+    client.connection = FakeConnectionContext(process)
+
+    assert await client.get_background("40 + 2") == 42
+    assert process.command == BACKGROUND_VALUE_COMMAND
+
+
+@pytest.mark.asyncio
+async def test_get_background_detects_old_server(mocker):
+    process = mocker.Mock()
+    process.stdin = mocker.Mock()
+    process.stdout = ReaderOnce("")
+    process.stderr = ReaderOnce("Unknown command")
+    process.wait = mocker.AsyncMock()
+
+    client = Client()
+    client.connection = FakeConnectionContext(process)
+
+    with pytest.raises(ProtocolVersionError, match="background execution"):
+        await client.get_background("42")
+
+
+@pytest.mark.asyncio
 async def test_get_raises_remote_value_error(mocker):
     process = mocker.Mock()
     process.stdin = mocker.Mock()
@@ -635,6 +684,31 @@ async def test_structured_client_detects_old_server(mocker):
     with pytest.raises(ProtocolVersionError, match="Upgrade"):
         await client.execute("pass")
     assert client.structured_protocol is False
+
+
+@pytest.mark.asyncio
+async def test_background_structured_client_uses_versioned_command(mocker):
+    process = protocol_process(mocker, ['{"type":"result","ok":true}\n'])
+    client = Client()
+    client.connection = FakeConnectionContext(process)
+
+    result = await client.execute_background("pass")
+
+    assert result.ok
+    assert process.command == BACKGROUND_EXECUTE_COMMAND
+
+
+@pytest.mark.asyncio
+async def test_background_structured_old_server_keeps_foreground_cache(mocker):
+    process = protocol_process(mocker, [], "Unknown command")
+    client = Client()
+    client.structured_protocol = True
+    client.connection = FakeConnectionContext(process)
+
+    with pytest.raises(ProtocolVersionError, match="background execution"):
+        await client.execute_background("pass")
+
+    assert client.structured_protocol is True
 
 
 @pytest.mark.asyncio

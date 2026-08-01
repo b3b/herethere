@@ -4,6 +4,9 @@ import contextlib
 import json
 import logging
 import os
+import threading
+from concurrent.futures import ThreadPoolExecutor
+from io import StringIO
 from pathlib import Path
 
 import asyncssh
@@ -11,6 +14,8 @@ import pytest
 
 from herethere.everywhere.commands import (
     BACKGROUND_COMMAND,
+    BACKGROUND_EXECUTE_COMMAND,
+    BACKGROUND_VALUE_COMMAND,
     CODE_COMMAND,
     PING_COMMAND,
     RECENT_LOGS_COMMAND,
@@ -424,6 +429,18 @@ async def test_backgroud_line_executed(server_instance, connection_config):
 
 
 @pytest.mark.asyncio
+async def test_server_executor_returns_callable_value():
+    executor = ThreadPoolExecutor(max_workers=1)
+    server = SSHServerHere("user", "password", executor=executor)
+    try:
+        result = await server.run_in_executor(lambda value: value + 1, value=41)
+    finally:
+        executor.shutdown()
+
+    assert result == 42
+
+
+@pytest.mark.asyncio
 async def test_structured_shell_streams_separately_and_returns_status(
     server_instance, connection_config
 ):
@@ -563,6 +580,106 @@ async def test_value_command_captures_awaitable_stdout(
 
 
 @pytest.mark.asyncio
+async def test_background_value_runs_in_worker_and_returns_value(
+    server_instance, connection_config
+):
+    event_loop_thread = threading.get_ident()
+    async with asyncssh.connect(**connection_config.asdict, known_hosts=None) as conn:
+        result = await conn.run(
+            BACKGROUND_VALUE_COMMAND,
+            check=True,
+            input=(
+                "(__import__('threading').get_ident(), "
+                "print('noisy') or {'state': 'ready'})"
+            ),
+        )
+
+    worker_thread, value = loads_value(result.stdout)
+    assert worker_thread != event_loop_thread
+    assert value == {"state": "ready"}
+    assert "noisy" not in result.stdout
+
+
+@pytest.mark.asyncio
+async def test_background_value_preserves_errors_and_awaitable_output_capture(
+    server_instance, connection_config
+):
+    async with asyncssh.connect(**connection_config.asdict, known_hosts=None) as conn:
+        await conn.run(
+            CODE_COMMAND,
+            check=True,
+            input=(
+                "async def background_value_answer():\n"
+                "    print('awaitable-noise')\n"
+                "    return 42\n"
+            ),
+        )
+        value_result = await conn.run(
+            BACKGROUND_VALUE_COMMAND,
+            check=True,
+            input="background_value_answer()",
+        )
+        error_result = await conn.run(
+            BACKGROUND_VALUE_COMMAND,
+            check=True,
+            input="1 / 0",
+        )
+
+    assert loads_value(value_result.stdout) == 42
+    assert "awaitable-noise" not in value_result.stdout
+    with pytest.raises(RemoteValueError, match="ZeroDivisionError") as caught:
+        loads_value(error_result.stdout)
+    assert "ZeroDivisionError" in caught.value.traceback
+
+
+@pytest.mark.asyncio
+async def test_background_awaitable_output_is_isolated_from_overlapping_value(
+    server_instance, connection_config
+):
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def overlapping_background_value():
+        started.set()
+        await release.wait()
+        print("background-awaitable-noise")
+        return 42
+
+    server_instance.namespace["overlapping_background_value"] = (
+        overlapping_background_value
+    )
+    leaked_output = StringIO()
+    with contextlib.redirect_stdout(leaked_output):
+        async with asyncssh.connect(
+            **connection_config.asdict,
+            known_hosts=None,
+        ) as conn:
+            background = asyncio.create_task(
+                conn.run(
+                    BACKGROUND_VALUE_COMMAND,
+                    check=True,
+                    input="overlapping_background_value()",
+                )
+            )
+            try:
+                await asyncio.wait_for(started.wait(), timeout=1)
+                foreground = await conn.run(
+                    VALUE_COMMAND,
+                    check=True,
+                    input="print('foreground-value-noise') or 1",
+                )
+            finally:
+                release.set()
+            background_result = await asyncio.wait_for(background, timeout=1)
+
+    assert loads_value(foreground.stdout) == 1
+    assert loads_value(background_result.stdout) == 42
+    assert "foreground-value-noise" not in foreground.stdout
+    assert "background-awaitable-noise" not in background_result.stdout
+    assert leaked_output.getvalue() == ""
+
+
+@pytest.mark.asyncio
 async def test_namespace_variable_updated(
     server_instance, connection_config, tmp_environ
 ):
@@ -627,6 +744,142 @@ async def test_structured_execute_reports_remote_exception(
     assert events[-1]["error"]["message"] == "missing"
     assert "LookupError: missing" in events[-1]["error"]["traceback"]
     assert any(event.get("stream") == "stderr" for event in events)
+
+
+@pytest.mark.asyncio
+async def test_background_execute_discards_output_and_runs_in_worker(
+    server_instance, connection_config
+):
+    event_loop_thread = threading.get_ident()
+    async with asyncssh.connect(**connection_config.asdict, known_hosts=None) as conn:
+        result = await conn.run(
+            BACKGROUND_EXECUTE_COMMAND,
+            check=True,
+            input=(
+                "import sys, threading\n"
+                "background_worker_thread = threading.get_ident()\n"
+                "print('out')\n"
+                "print('err', file=sys.stderr)\n"
+                "sys.stdout.flush()\n"
+            ),
+        )
+        thread_result = await conn.run(
+            VALUE_COMMAND,
+            check=True,
+            input="background_worker_thread",
+        )
+
+    events = [json.loads(line) for line in result.stdout.splitlines()]
+    assert events == [{"type": "result", "ok": True}]
+    assert loads_value(thread_result.stdout) != event_loop_thread
+
+
+@pytest.mark.asyncio
+async def test_background_execute_preserves_structured_exception(
+    server_instance, connection_config
+):
+    async with asyncssh.connect(**connection_config.asdict, known_hosts=None) as conn:
+        result = await conn.run(
+            BACKGROUND_EXECUTE_COMMAND,
+            check=True,
+            input="raise RuntimeError('background failure')",
+        )
+
+    events = [json.loads(line) for line in result.stdout.splitlines()]
+    error = events[-1]["error"]
+    assert events[-1]["ok"] is False
+    assert error["remote_type"] == "RuntimeError"
+    assert error["message"] == "background failure"
+    assert "RuntimeError: background failure" in error["traceback"]
+
+
+@pytest.mark.asyncio
+async def test_background_wait_keeps_foreground_server_responsive(
+    server_instance, connection_config
+):
+    release = threading.Event()
+    started = threading.Event()
+    server_instance.namespace.update(
+        background_test_release=release,
+        background_test_started=started,
+    )
+    async with asyncssh.connect(**connection_config.asdict, known_hosts=None) as conn:
+        waiting = asyncio.create_task(
+            conn.run(
+                BACKGROUND_VALUE_COMMAND,
+                check=True,
+                input=(
+                    "background_test_started.set() or background_test_release.wait(5)"
+                ),
+            )
+        )
+        assert await asyncio.to_thread(started.wait, 1)
+        pong = await asyncio.wait_for(conn.run(PING_COMMAND, check=True), timeout=1)
+        assert pong.stdout == "pong"
+        release.set()
+        result = await asyncio.wait_for(waiting, timeout=1)
+
+    assert loads_value(result.stdout) is True
+
+
+@pytest.mark.asyncio
+async def test_concurrent_background_execute_responses_remain_separate(
+    server_instance, connection_config
+):
+    async with asyncssh.connect(**connection_config.asdict, known_hosts=None) as conn:
+        first, second = await asyncio.gather(
+            conn.run(
+                BACKGROUND_EXECUTE_COMMAND,
+                check=True,
+                input="import time; time.sleep(0.01); print('first')",
+            ),
+            conn.run(
+                BACKGROUND_EXECUTE_COMMAND,
+                check=True,
+                input="print('second')",
+            ),
+        )
+
+    first_events = [json.loads(line) for line in first.stdout.splitlines()]
+    second_events = [json.loads(line) for line in second.stdout.splitlines()]
+    assert first_events == [{"type": "result", "ok": True}]
+    assert second_events == [{"type": "result", "ok": True}]
+
+
+@pytest.mark.asyncio
+async def test_background_worker_may_finish_after_client_disconnect(
+    server_instance, connection_config
+):
+    started = threading.Event()
+    release = threading.Event()
+    finished = threading.Event()
+    server_instance.namespace.update(
+        disconnect_test_started=started,
+        disconnect_test_release=release,
+        disconnect_test_finished=finished,
+    )
+    conn = await asyncssh.connect(**connection_config.asdict, known_hosts=None)
+    try:
+        process = await conn.create_process(BACKGROUND_EXECUTE_COMMAND)
+        process.stdin.write(
+            "disconnect_test_started.set()\n"
+            "try:\n"
+            "    disconnect_test_release.wait(5)\n"
+            "    print('late output')\n"
+            "finally:\n"
+            "    disconnect_test_finished.set()\n"
+        )
+        process.stdin.write_eof()
+        assert await asyncio.to_thread(started.wait, 1)
+        conn.close()
+        await asyncio.wait_for(conn.wait_closed(), timeout=1)
+    finally:
+        release.set()
+
+    assert await asyncio.to_thread(finished.wait, 1)
+    async with asyncssh.connect(**connection_config.asdict, known_hosts=None) as check:
+        pong = await check.run(PING_COMMAND, check=True)
+    assert pong.stdout == "pong"
 
 
 @pytest.mark.asyncio

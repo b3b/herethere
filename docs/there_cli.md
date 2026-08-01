@@ -111,10 +111,10 @@ there --json --config ./there.env ping
 ```
 
 Text mode prints `pong`. JSON mode returns it in the `response` field. This is
-a transport readiness check; it does not establish that an application's UI or
-application-specific state is ready. Ping has a 10-second total timeout by
-default; use `there --timeout SECONDS ping` to override it. Other commands have
-no total timeout by default.
+a transport readiness check; it does not establish that application-specific
+state is ready. Ping has a 10-second total timeout by default; use
+`there --timeout SECONDS ping` to override it. Other commands have no total
+timeout by default.
 
 ## Running code in the live interpreter
 
@@ -145,6 +145,23 @@ Statements are rejected before connecting.
 
 When `there run` reports `ProtocolVersionError`, upgrade herethere on the remote
 target before retrying.
+
+## Foreground and background Python execution
+
+By default, `run` and `get` execute Python on the target application's main
+thread. Use `--background` for blocking or long-running operations:
+
+```console
+there run --background --code "perform_expensive_work()"
+there get --background "generation_done.wait(180)"
+there --json get --background "wait_for_generation(180)"
+```
+
+The CLI waits for completion. Background `run` discards user stdout and stderr
+but still reports exceptions and failure exit codes. Background `get` returns its
+value normally. APIs tied to the application's main or event-loop thread must
+remain foreground or be explicitly scheduled there. Disconnecting or timing out
+does not cancel worker code which is already running, so prefer finite waits.
 
 ## Running commands in the remote shell
 

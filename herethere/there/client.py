@@ -17,6 +17,8 @@ import asyncssh
 
 from herethere.everywhere.commands import (
     BACKGROUND_COMMAND,
+    BACKGROUND_EXECUTE_COMMAND,
+    BACKGROUND_VALUE_COMMAND,
     CODE_COMMAND,
     EXECUTE_COMMAND,
     PING_COMMAND,
@@ -289,6 +291,14 @@ class Client:
         """Evaluate a Python expression remotely and return its Python value."""
         return await self._get_value(expression)
 
+    async def get_background(self, expression: str):
+        """Evaluate a Python expression in a remote executor worker."""
+        return await self._get_value(
+            expression,
+            command=BACKGROUND_VALUE_COMMAND,
+            background=True,
+        )
+
     async def logs(self, max_records: int | None = None) -> RecentLogsSnapshot:
         """Return a finite snapshot of recent remote Python log records."""
         if max_records is not None and (
@@ -337,10 +347,16 @@ class Client:
             ) from exc
         return _recent_logs_snapshot(event)
 
-    async def _get_value(self, expression: str):
-        """Run the legacy value command shared with compatibility fallback."""
+    async def _get_value(
+        self,
+        expression: str,
+        *,
+        command: str = VALUE_COMMAND,
+        background: bool = False,
+    ):
+        """Run a value command and decode its response."""
         async with self.connection as ssh:
-            async with ssh.create_process(VALUE_COMMAND) as process:
+            async with ssh.create_process(command) as process:
                 process.stdin.write(expression)
                 process.stdin.write_eof()
 
@@ -349,6 +365,8 @@ class Client:
 
                 if not message:
                     stderr = await process.stderr.read()
+                    if background and "Unknown command" in stderr:
+                        raise _background_protocol_version_error()
                     message = "Remote value command returned no output."
                     if stderr:
                         message += f"\nRemote stderr:\n{stderr}"
@@ -376,6 +394,22 @@ class Client:
             self.structured_protocol = False
             raise
         self.structured_protocol = True
+        return ExecutionResult(error=_remote_error(event))
+
+    async def execute_background(
+        self,
+        code: str,
+        stdout: TextIO | None = None,
+        stderr: TextIO | None = None,
+    ) -> ExecutionResult:
+        """Execute code in a remote worker using the structured protocol."""
+        event = await self._structured_operation(
+            BACKGROUND_EXECUTE_COMMAND,
+            code,
+            stdout=stdout,
+            stderr=stderr,
+            background=True,
+        )
         return ExecutionResult(error=_remote_error(event))
 
     async def upload(self, localpaths: list[str], remotepath) -> None:
@@ -466,6 +500,7 @@ class Client:
         payload: str,
         stdout: TextIO | None = None,
         stderr: TextIO | None = None,
+        background: bool = False,
     ) -> dict:
         """Run a structured JSON-lines command and return its final event."""
         stdout = stdout or sys.stdout
@@ -520,7 +555,7 @@ class Client:
                 if final_event is None:
                     diagnostic = "".join(diagnostic_stderr)
                     if "Unknown command" in diagnostic:
-                        raise _protocol_version_error()
+                        raise _protocol_version_error_for(background)
                     raise ProtocolError("Remote protocol returned no result event.")
                 if diagnostic_stderr:
                     stderr.write("".join(diagnostic_stderr))
@@ -613,6 +648,19 @@ def _protocol_version_error() -> ProtocolVersionError:
         "The remote server does not support structured live execution. "
         "Upgrade herethere on the remote server."
     )
+
+
+def _background_protocol_version_error() -> ProtocolVersionError:
+    return ProtocolVersionError(
+        "The remote server does not support background execution. "
+        "Upgrade herethere on the remote server."
+    )
+
+
+def _protocol_version_error_for(background: bool) -> ProtocolVersionError:
+    if background:
+        return _background_protocol_version_error()
+    return _protocol_version_error()
 
 
 def _shell_protocol_version_error(remote_version: object) -> ProtocolVersionError:

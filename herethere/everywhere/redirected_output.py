@@ -1,9 +1,9 @@
 """herethere.everywhere.redirected_output"""
 
 import sys
-import threading
 from collections.abc import Iterator
 from contextlib import contextmanager
+from contextvars import ContextVar
 from typing import TextIO
 
 
@@ -12,7 +12,14 @@ class RedirectedOutputWrapper:
 
     def __init__(self, stream: TextIO):
         self._original_stream = stream
-        self._redirected_streams = {}
+        self._redirected_stream = ContextVar(
+            f"herethere_redirected_output_{id(self)}",
+            default=stream,
+        )
+        self._redirect_tokens = ContextVar(
+            f"herethere_redirected_output_tokens_{id(self)}",
+            default=(),
+        )
 
     def __getattr__(self, attr):
         return getattr(self._target_stream, attr)
@@ -24,23 +31,25 @@ class RedirectedOutputWrapper:
 
     @property
     def _target_stream(self):
-        return self._redirected_streams.get(
-            threading.get_ident(), self._original_stream
-        )
+        return self._redirected_stream.get()
 
     def register(self, stream: TextIO):
-        """Start output redirection for current thread."""
-        self._redirected_streams[threading.get_ident()] = stream
+        """Start output redirection for the current thread or asyncio task."""
+        token = self._redirected_stream.set(stream)
+        self._redirect_tokens.set((*self._redirect_tokens.get(), token))
 
     def unregister(self):
-        """Stop output redirection for current thread."""
-        self._redirected_streams.pop(threading.get_ident(), None)
+        """Restore the previous output redirection in the current context."""
+        tokens = self._redirect_tokens.get()
+        if tokens:
+            self._redirect_tokens.set(tokens[:-1])
+            self._redirected_stream.reset(tokens[-1])
 
 
 @contextmanager
 def redirect_output(stdout: TextIO, stderr: TextIO) -> Iterator[None]:
-    """Context manager for temporarily redirecting current thread
-    stdout and stderr to another files.
+    """Context manager for temporarily redirecting current context's
+    stdout and stderr to other files.
     """
     if not isinstance(sys.stdout, RedirectedOutputWrapper):
         sys.stdout = RedirectedOutputWrapper(sys.stdout)

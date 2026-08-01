@@ -35,8 +35,7 @@ THERE_PASSWORD=secret
 Variables in the process environment override values from the file.
 
 `there ping` validates connection, authentication, command routing, and the
-herethere response. It does not prove that application-specific state or a UI
-is ready.
+herethere response. It does not prove that application-specific state is ready.
 
 ## Commands
 
@@ -48,6 +47,7 @@ value directly:
 ```console
 there --json get "counter"
 there --json get "type(app).__name__"
+there --json get --background "generation_done.wait(180)"
 ```
 
 Use `get` when the expression's resulting value is the desired output, avoiding
@@ -64,6 +64,13 @@ accessible to `download`, then retrieve it.
 The expression-only restriction is syntactic, not a read-only guarantee.
 Calls, property access, operators, and comprehensions may execute arbitrary
 Python or mutate the live process.
+
+Use `--background` for an expression which blocks or waits. The CLI remains
+attached, the expression runs in a server worker thread, and its value is
+returned normally. Prefer finite waits because disconnecting or timing out does
+not cancel worker code already running. Keep APIs tied to the application's main
+or event-loop thread in a foreground command or explicitly schedule them onto
+their required thread.
 
 ### `logs`
 
@@ -84,12 +91,19 @@ Execute Python in the existing remote process and namespace:
 there --json run script.py
 there --json run -
 there --json run --code "counter += 1"
+there --json run --background --code "perform_expensive_work()"
 ```
 
 Supply exactly one local file, local stdin (`-`), or inline code (`--code` /
 `-c`). The maximum input is 64 KiB. A `ProtocolVersionError` means the remote
 herethere server is too old for the operation; report the mismatch rather than
 blindly retrying.
+
+Background `run` remains attached and executes in a server worker thread. It
+discards user stdout and stderr but retains success, exception, traceback, and
+exit-status reporting. Keep APIs tied to the application's main or event-loop
+thread in a foreground command or explicitly schedule them onto their required
+thread.
 
 ### `shell`
 

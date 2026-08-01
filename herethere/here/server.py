@@ -17,6 +17,8 @@ import asyncssh
 from herethere.everywhere.code import runcode
 from herethere.everywhere.commands import (
     BACKGROUND_COMMAND,
+    BACKGROUND_EXECUTE_COMMAND,
+    BACKGROUND_VALUE_COMMAND,
     CODE_COMMAND,
     EXECUTE_COMMAND,
     PING_COMMAND,
@@ -44,6 +46,17 @@ from herethere.here.shell import handle_shell_command
 
 MAX_COMMAND_LENGTH = 65536  # 65537
 CONNECTION_CLOSE_TIMEOUT = 1.0
+
+
+class _DiscardOutput:
+    """Text writer which accepts and immediately discards output."""
+
+    def write(self, data: str) -> int:
+        """Report a successful write without retaining data."""
+        return len(data)
+
+    def flush(self) -> None:
+        """Provide the standard text-writer flush interface."""
 
 
 async def handle_ping_command(process: asyncssh.SSHServerProcess, namespace: dict):  # pylint: disable=unused-argument
@@ -100,6 +113,46 @@ async def handle_value_command(process: asyncssh.SSHServerProcess, namespace: di
     await process.stdout.drain()
 
 
+def evaluate_value_sync(expression: str, namespace: dict):
+    """Evaluate an expression in a worker while suppressing incidental output."""
+    output = _DiscardOutput()
+    with redirect_output(stdout=output, stderr=output):
+        return eval(expression, namespace)  # pylint: disable=eval-used
+
+
+async def handle_background_value_command(
+    process: asyncssh.SSHServerProcess, namespace: dict
+):
+    """Evaluate and return one Python value from an executor worker."""
+    server: SSHServerHere = process.channel.get_connection().get_owner()
+    data = await process.stdin.read(MAX_COMMAND_LENGTH)
+
+    try:
+        result = await server.run_in_executor(
+            evaluate_value_sync,
+            expression=data,
+            namespace=namespace,
+        )
+        output = _DiscardOutput()
+        with redirect_output(stdout=output, stderr=output):
+            result = await maybe_await(result)
+        event = dumps_value(result)
+    except Exception as exc:  # pylint: disable=broad-exception-caught
+        event = dumps_error(exc, traceback.format_exc())
+
+    process.stdout.write(event)
+    process.stdout.write("\n")
+    await process.stdout.drain()
+
+
+def _write_execute_result(process: asyncssh.SSHServerProcess, error) -> None:
+    """Write the final structured execution status event."""
+    event = {"type": "result", "ok": error is None}
+    if error is not None:
+        event["error"] = error.asdict()
+    write_event(process.stdout, event)
+
+
 async def handle_execute_command(process: asyncssh.SSHServerProcess, namespace: dict):
     """Execute code and return JSON-lines output events plus a final status."""
     data = await process.stdin.read(MAX_COMMAND_LENGTH)
@@ -109,10 +162,24 @@ async def handle_execute_command(process: asyncssh.SSHServerProcess, namespace: 
         stdout=EventStream(process.stdout, "stdout"),
         stderr=EventStream(process.stdout, "stderr"),
     )
-    event = {"type": "result", "ok": error is None}
-    if error is not None:
-        event["error"] = error.asdict()
-    write_event(process.stdout, event)
+    _write_execute_result(process, error)
+
+
+async def handle_background_execute_command(
+    process: asyncssh.SSHServerProcess, namespace: dict
+):
+    """Execute structured Python code silently in an executor worker."""
+    server: SSHServerHere = process.channel.get_connection().get_owner()
+    data = await process.stdin.read(MAX_COMMAND_LENGTH)
+    output = _DiscardOutput()
+    error = await server.run_in_executor(
+        execute_live,
+        code=data,
+        namespace=namespace,
+        stdout=output,
+        stderr=output,
+    )
+    _write_execute_result(process, error)
 
 
 async def handle_recent_logs_command(
@@ -178,6 +245,8 @@ async def handle_client(
             PING_COMMAND: handle_ping_command,
             CODE_COMMAND: handle_code_command,
             BACKGROUND_COMMAND: handle_background_code_command,
+            BACKGROUND_EXECUTE_COMMAND: handle_background_execute_command,
+            BACKGROUND_VALUE_COMMAND: handle_background_value_command,
             SHELL_COMMAND: handle_shell_command,
             VALUE_COMMAND: handle_value_command,
             EXECUTE_COMMAND: handle_execute_command,
@@ -257,8 +326,8 @@ class SSHServerHere(asyncssh.SSHServer):
         return expected is not None and password == expected
 
     async def run_in_executor(self, func: Callable[..., Any], **kwargs: Any):
-        """Run func in the thead."""
-        await asyncio.get_running_loop().run_in_executor(
+        """Run a callable in the thread-pool executor and return its result."""
+        return await asyncio.get_running_loop().run_in_executor(
             self.executor, partial(func, **kwargs)
         )
 

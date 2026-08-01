@@ -774,6 +774,14 @@ def ping_command(ctx):
 
 @cli.command("run")
 @click.option(
+    "--background",
+    is_flag=True,
+    help=(
+        "Execute remote Python in a worker thread. "
+        "The command remains attached and waits for completion."
+    ),
+)
+@click.option(
     "-c",
     "--code",
     "code_text",
@@ -781,7 +789,7 @@ def ping_command(ctx):
 )
 @click.argument("file_path", metavar="[FILE]", required=False)
 @click.pass_context
-def run_command(ctx, code_text, file_path):
+def run_command(ctx, background, code_text, file_path):
     """Execute a local FILE, inline code, or stdin in the live namespace."""
     invocation = get_cli_context(ctx)
     code = _load_text_source(
@@ -798,6 +806,12 @@ def run_command(ctx, code_text, file_path):
         stdout, stderr = _text_streams(ctx)
 
     async def operation(client):
+        if background:
+            return await client.execute_background(
+                code,
+                stdout=stdout,
+                stderr=stderr,
+            )
         return await client.execute(code, stdout=stdout, stderr=stderr)
 
     result = _call_remote(invocation.config, invocation.timeout, operation)
@@ -815,9 +829,17 @@ def _strict_json_value(value):
 
 
 @cli.command("get")
+@click.option(
+    "--background",
+    is_flag=True,
+    help=(
+        "Evaluate remote Python in a worker thread. "
+        "The command remains attached and waits for completion."
+    ),
+)
 @click.argument("expression")
 @click.pass_context
-def get_command(ctx, expression):
+def get_command(ctx, background, expression):
     """Get one Python expression value from the live namespace."""
     invocation = get_cli_context(ctx)
     try:
@@ -829,6 +851,8 @@ def get_command(ctx, expression):
     _validate_live_input(expression, "Expression")
 
     async def operation(client):
+        if background:
+            return await client.get_background(expression)
         return await client.get(expression)
 
     value = _call_remote(invocation.config, invocation.timeout, operation)

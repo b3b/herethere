@@ -57,7 +57,9 @@ def install_fake_remote(
     *,
     ping=None,
     execute=None,
+    execute_background=None,
     get=None,
+    get_background=None,
     upload=None,
     download=None,
     logs=None,
@@ -74,9 +76,19 @@ def install_fake_remote(
                 return execute(code, stdout, stderr)
             return SimpleNamespace(ok=True, error=None)
 
+        async def execute_background(self, code, stdout=None, stderr=None):
+            if execute_background is not None:
+                return execute_background(code, stdout, stderr)
+            return SimpleNamespace(ok=True, error=None)
+
         async def get(self, expression):
             if get is not None:
                 return get(expression)
+            return 42
+
+        async def get_background(self, expression):
+            if get_background is not None:
+                return get_background(expression)
             return 42
 
         async def upload(self, local_paths, remote_path):
@@ -1091,6 +1103,28 @@ def test_run_text_output_is_not_truncated(monkeypatch):
     assert result.stderr == "0123456789"
 
 
+def test_run_background_selects_background_client_operation(monkeypatch):
+    received = {}
+
+    def execute_background(code, stdout, stderr):
+        received["code"] = code
+        received["stdout"] = stdout
+        received["stderr"] = stderr
+        return SimpleNamespace(ok=True, error=None)
+
+    install_fake_remote(monkeypatch, execute_background=execute_background)
+    result, payload = invoke_json(
+        ["run", "--background", "--code", "print('background')"]
+    )
+
+    assert result.exit_code == ExitCode.SUCCESS
+    assert received["code"] == "print('background')"
+    assert received["stdout"] is not None
+    assert received["stderr"] is not None
+    assert payload["stdout"] == ""
+    assert payload["stderr"] == ""
+
+
 def test_get_returns_decoded_json_value(monkeypatch):
     def get(expression):
         assert expression == "answer"
@@ -1100,6 +1134,21 @@ def test_get_returns_decoded_json_value(monkeypatch):
     _, payload = invoke_json(["get", "answer"])
 
     assert payload["value"] == [41, 42]
+
+
+def test_get_background_selects_background_client_operation(monkeypatch):
+    received = {}
+
+    def get_background(expression):
+        received["expression"] = expression
+        return {"completed": True}
+
+    install_fake_remote(monkeypatch, get_background=get_background)
+    result, payload = invoke_json(["get", "--background", "wait_for_work(5)"])
+
+    assert result.exit_code == ExitCode.SUCCESS
+    assert received["expression"] == "wait_for_work(5)"
+    assert payload["value"] == {"completed": True}
 
 
 @pytest.mark.parametrize("expression", ["x = 1", "x = 1; x", ""])
@@ -1489,13 +1538,45 @@ async def test_console_run_and_get_persist_live_namespace(
             "console_live_value + 1",
         ],
     )
+    background_run_result = await asyncio.to_thread(
+        CliRunner().invoke,
+        cli,
+        [
+            "--json",
+            "--config",
+            str(config),
+            "run",
+            "--background",
+            "--code",
+            "console_background_value = 84\nprint('background ready')",
+        ],
+    )
+    background_get_result = await asyncio.to_thread(
+        CliRunner().invoke,
+        cli,
+        [
+            "--json",
+            "--config",
+            str(config),
+            "get",
+            "--background",
+            "console_background_value // 2",
+        ],
+    )
 
     run_payload = json.loads(run_result.output)
     get_payload = json.loads(get_result.output)
+    background_run_payload = json.loads(background_run_result.output)
+    background_get_payload = json.loads(background_get_result.output)
     assert run_result.exit_code == 0
     assert run_payload["stdout"] == "ready\n"
     assert get_result.exit_code == 0
     assert get_payload["value"] == 42
+    assert background_run_result.exit_code == 0
+    assert background_run_payload["stdout"] == ""
+    assert background_run_payload["stderr"] == ""
+    assert background_get_result.exit_code == 0
+    assert background_get_payload["value"] == 42
 
 
 @pytest.mark.asyncio
@@ -1976,6 +2057,23 @@ def test_run_help_describes_file_inline_and_stdin_sources():
     assert "-c" in result.output
     assert "local FILE" in result.output
     assert "stdin" in result.output
+    assert "--background" in result.output
+
+
+def test_get_help_shows_background_as_operation_option():
+    result = CliRunner().invoke(cli, ["get", "--help"])
+
+    assert result.exit_code == ExitCode.SUCCESS
+    assert "--background" in result.output
+    assert "--config" not in result.output
+
+
+@pytest.mark.parametrize("command", ["ping", "logs", "shell", "upload", "download"])
+def test_unrelated_command_help_omits_background(command):
+    result = CliRunner().invoke(cli, [command, "--help"])
+
+    assert result.exit_code == ExitCode.SUCCESS
+    assert "--background" not in result.output
 
 
 @pytest.mark.asyncio
