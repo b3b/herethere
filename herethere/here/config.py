@@ -13,7 +13,7 @@ logger = logging.getLogger("herethere")
 class ServerConfig(ConnectionConfig):
     """SSH server configuration."""
 
-    key_path: str = "./key.rsa"
+    key_path: str = "./ssh_host_key"
     sftp_root: str = "."
 
     def __init__(
@@ -23,7 +23,7 @@ class ServerConfig(ConnectionConfig):
         *,
         host: str = "127.0.0.1",
         port: int = 8022,
-        key_path: str = "./key.rsa",
+        key_path: str = "./ssh_host_key",
         sftp_root: str = ".",
         chroot: str | None = None,
     ):
@@ -76,7 +76,7 @@ class ServerConfig(ConnectionConfig):
                 username=env[prefixed_key(prefix=prefix, key="username")],
                 password=env[prefixed_key(prefix=prefix, key="password")],
                 key_path=env.get(
-                    prefixed_key(prefix=prefix, key="key_path"), "./key.rsa"
+                    prefixed_key(prefix=prefix, key="key_path"), "./ssh_host_key"
                 ),
                 sftp_root=sftp_root,
             )

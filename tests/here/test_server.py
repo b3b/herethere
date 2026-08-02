@@ -1035,8 +1035,8 @@ async def test_sftp_file_uploaded(
 
 
 @pytest.mark.asyncio
-async def test_new_key_generated_if_not_exist(tmpdir, server_config):
-    path = Path(tmpdir) / "test_key_do_not_exist.rsa"
+async def test_new_key_generated_if_not_exist(tmpdir, server_config, connection_config):
+    path = Path(tmpdir) / "ssh_host_key"
     assert not os.path.exists(path)
     server_config.key_path = path
 
@@ -1044,7 +1044,10 @@ async def test_new_key_generated_if_not_exist(tmpdir, server_config):
 
     try:
         assert os.path.exists(path)
+        assert asyncssh.read_private_key(path).get_algorithm() == "ssh-ed25519"
         assert server_instance.is_serving()
+        async with asyncssh.connect(**connection_config.asdict, known_hosts=None):
+            pass
     finally:
         await server_instance.stop()
 

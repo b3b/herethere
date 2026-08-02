@@ -41,6 +41,6 @@ test-server: sync
 	HERE_PORT=8022 \
 	HERE_USERNAME=here \
 	HERE_PASSWORD=test \
-	HERE_KEY_PATH="$$tmpdir/key.rsa" \
+	HERE_KEY_PATH="$$tmpdir/ssh_host_key" \
 	HERE_SFTP_ROOT="$$tmpdir" \
 	uv run --project "$(CURDIR)" --directory "$$tmpdir" python -m herethere.here

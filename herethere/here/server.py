@@ -454,7 +454,7 @@ class RunningServer:
 
 def generate_private_key(path: str):
     """Generate and save private key to a given location."""
-    asyncssh.generate_private_key("ssh-rsa").write_private_key(path)
+    asyncssh.generate_private_key("ssh-ed25519").write_private_key(path)
 
 
 async def start_server(

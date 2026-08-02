@@ -66,13 +66,13 @@ def test_server_config_key_path_defaults_to_local_key_file():
 
     config = ServerConfig.load_from_dict(env=env, prefix="here")
 
-    assert config.key_path == "./key.rsa"
+    assert config.key_path == "./ssh_host_key"
 
 
 def test_server_config_constructor_key_path_defaults_to_local_key_file():
     config = ServerConfig(username="here", password="there")
 
-    assert config.key_path == "./key.rsa"
+    assert config.key_path == "./ssh_host_key"
 
 
 def test_server_config_constructor_host_and_port_default_to_localhost():

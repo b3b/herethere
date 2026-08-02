@@ -49,9 +49,9 @@ HERE_PORT=8022
 HERE_USERNAME=admin
 HERE_PASSWORD=xxx
 
-# Path to store the generated private key.
-# Defaults to ./key.rsa.
-HERE_KEY_PATH=./key.rsa
+# Path to the server private key. Missing keys are generated as Ed25519.
+# Defaults to ./ssh_host_key.
+HERE_KEY_PATH=./ssh_host_key
 
 # Path to the root directory for the SFTP session (%there upload/download commands)
 # Defaults to the here-server process current directory.
