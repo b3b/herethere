@@ -1,6 +1,20 @@
 Changelog
 =========
 
+0.3.1
+-----
+
+* Added ``--background`` worker-thread execution to ``there run`` and
+  ``there get`` for blocking or long-running operations
+
+* Fixed successful standalone ``there`` commands returning a non-zero exit
+  status
+* Removed application-level input size limits from ``there run`` and
+  ``there get``
+* Changed the default SSH host-key path from ``./key.rsa`` to
+  ``./ssh_host_key`` and now generate missing host keys as Ed25519 instead of
+  RSA  
+
 0.3.0
 -----
 
