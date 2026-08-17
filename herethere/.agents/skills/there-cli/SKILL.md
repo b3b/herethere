@@ -124,5 +124,8 @@ Pass `-` to `run` or `shell` only when deliberately sending local stdin. A
 positional argument to `shell` is always a local script file; use
 `shell --command "./script.sh"` to run a file already present remotely.
 
-Read [references/commands.md](references/commands.md) before composing transfers,
-handling failures, parsing JSON fields, or using an unfamiliar command.
+Consult the applicable section of
+[references/commands.md](references/commands.md) when exact transfer syntax,
+failure or JSON-envelope semantics, or an unfamiliar command requires more
+detail than this file provides. Routine commands with established syntax do
+not require reopening the reference.
