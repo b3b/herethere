@@ -35,6 +35,7 @@ class ContextObject:
     stdout: TextIO = None
     stderr: TextIO = None
     background: bool = False
+    worker: bool = False
     raw_line: str | None = None
     raw_remainder: str | None = None
     history: RecentThereHistory | None = None
@@ -48,6 +49,8 @@ class ContextObject:
 
         if self.background:
             return self._run_background_command("runcode_background", code)
+        if self.worker:
+            return self._run_worker_command(code)
         return self._run_command("runcode", code)
 
     def shell(self):
@@ -72,6 +75,19 @@ class ContextObject:
         handler = getattr(self.client, command)
         run_sync(handler(code, stdout=self.stdout, stderr=self.stderr))
 
+    def _run_worker_command(self, code: str):
+        """Execute worker code synchronously and report its structured status."""
+        result = run_sync(
+            self.client.execute_worker(
+                code,
+                stdout=self.stdout,
+                stderr=self.stderr,
+            )
+        )
+        if not result.ok:
+            error = result.error
+            raise click.ClickException(f"{error.remote_type}: {error.message}")
+
     def _run_background_command(self, command: str, code: str):
         """Execute SSH command with a code, in background."""
 
@@ -91,6 +107,12 @@ class ContextObject:
     "-b", "--background", is_flag=True, default=False, help="Run in background"
 )
 @click.option(
+    "--worker",
+    is_flag=True,
+    default=False,
+    help="Run Python on a worker thread and wait for it to finish.",
+)
+@click.option(
     "-l",
     "--limit",
     default=24,
@@ -105,12 +127,18 @@ class ContextObject:
     help="The time to wait in seconds before executing a command",
 )
 @click.pass_context
-def there_group(ctx, background, limit, delay):
+def there_group(ctx, background, worker, limit, delay):
     """Group of commands to run on remote side."""
+    if worker and background:
+        raise click.UsageError("--worker and --background cannot be used together.")
+    if worker and ctx.invoked_subcommand is not None:
+        raise click.UsageError("--worker can only be used for Python code execution.")
     if background:
         if not all((ctx.obj.stdout, ctx.obj.stderr)):
             raise NeedDisplay(limit)
         ctx.obj.background = True
+    if worker:
+        ctx.obj.worker = True
     if delay:
         time.sleep(delay)
     if ctx.invoked_subcommand is None:

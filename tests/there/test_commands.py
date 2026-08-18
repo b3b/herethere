@@ -12,6 +12,7 @@ from click.testing import CliRunner
 
 import herethere.there.commands.log  # noqa: F401
 from herethere.everywhere import runcode
+from herethere.there.client import ExecutionResult, RemoteError
 from herethere.there.commands.core import (
     ContextObject,
     EmptyCode,
@@ -76,6 +77,22 @@ class GetClientStub:
 class RunClientStub:
     async def runcode(self, code, stdout=None, stderr=None):
         return None
+
+
+class WorkerClientStub:
+    def __init__(self, result=None, stdout_text="", stderr_text=""):
+        self.calls = []
+        self.result = result
+        self.stdout_text = stdout_text
+        self.stderr_text = stderr_text
+
+    async def execute_worker(self, code, stdout=None, stderr=None):
+        self.calls.append((code, stdout, stderr))
+        if stdout is not None:
+            stdout.write(self.stdout_text)
+        if stderr is not None:
+            stderr.write(self.stderr_text)
+        return self.result
 
 
 class ClosingSSHStreamStub:
@@ -199,6 +216,96 @@ def test_background_display_max_lines_applied(call_there_group):
     with pytest.raises(NeedDisplay) as exc:
         call_there_group(["-bl", "100"], "print('hello')")
     assert exc.value.maxlen == 100
+
+
+def test_worker_python_code_uses_synchronous_worker_operation():
+    client = WorkerClientStub(ExecutionResult())
+    ctx = ContextObject(client=client, code="print('hello')")
+
+    there_group(
+        ["--worker"],
+        "test",
+        standalone_mode=False,
+        obj=ctx,
+    )
+
+    assert ctx.worker is True
+    assert client.calls == [("# %%there ... \nprint('hello')", None, None)]
+
+
+def test_worker_python_code_replays_buffered_streams():
+    stdout = StringIO()
+    stderr = StringIO()
+    client = WorkerClientStub(
+        ExecutionResult(),
+        stdout_text="out\n",
+        stderr_text="err\n",
+    )
+
+    there_group(
+        ["--worker"],
+        "test",
+        standalone_mode=False,
+        obj=ContextObject(
+            client=client,
+            code="print('hello')",
+            stdout=stdout,
+            stderr=stderr,
+        ),
+    )
+
+    assert stdout.getvalue() == "out\n"
+    assert stderr.getvalue() == "err\n"
+
+
+def test_worker_python_code_propagates_structured_error():
+    client = WorkerClientStub(
+        ExecutionResult(
+            error=RemoteError(
+                remote_type="RuntimeError",
+                message="boom",
+                traceback="Traceback\nRuntimeError: boom",
+            )
+        ),
+        stderr_text="Traceback\nRuntimeError: boom\n",
+    )
+    stderr = StringIO()
+
+    with pytest.raises(click.ClickException, match="RuntimeError: boom") as exc:
+        there_group(
+            ["--worker"],
+            "test",
+            standalone_mode=False,
+            obj=ContextObject(
+                client=client,
+                code="raise RuntimeError('boom')",
+                stderr=stderr,
+            ),
+        )
+
+    assert "Traceback" not in exc.value.message
+    assert stderr.getvalue() == "Traceback\nRuntimeError: boom\n"
+
+
+@pytest.mark.parametrize(
+    "args, message",
+    (
+        (
+            ["--worker", "--background"],
+            "--worker and --background cannot be used together.",
+        ),
+        (["--worker", "shell"], "--worker can only be used for Python code"),
+        (["--worker", "get", "1 + 1"], "--worker can only be used for Python code"),
+    ),
+)
+def test_worker_rejects_invalid_magic_command_paths(args, message):
+    with pytest.raises(click.UsageError, match=message):
+        there_group(
+            args,
+            "test",
+            standalone_mode=False,
+            obj=ContextObject(client=RunClientStub(), code="print('hello')"),
+        )
 
 
 @pytest.mark.asyncio

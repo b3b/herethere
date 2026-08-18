@@ -8,6 +8,7 @@ import threading
 import traceback
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
 from functools import partial
 from io import StringIO
 from typing import Any
@@ -25,11 +26,14 @@ from herethere.everywhere.commands import (
     RECENT_LOGS_COMMAND,
     SHELL_COMMAND,
     VALUE_COMMAND,
+    WORKER_EXECUTE_COMMAND,
 )
-from herethere.everywhere.live import execute_live
+from herethere.everywhere.live import LiveError, execute_live
 from herethere.everywhere.logging import logger
 from herethere.everywhere.protocol import (
+    CapturedStreamEvent,
     EventStream,
+    OrderedBoundedOutputCollector,
     decode_request_object,
     write_event,
 )
@@ -58,6 +62,14 @@ class _DiscardOutput:
 
     def flush(self) -> None:
         """Provide the standard text-writer flush interface."""
+
+
+@dataclass(frozen=True)
+class WorkerExecutionOutcome:
+    """Buffered stream events and final status returned by worker execution."""
+
+    events: tuple[CapturedStreamEvent, ...]
+    error: LiveError | None
 
 
 async def handle_ping_command(process: asyncssh.SSHServerProcess, namespace: dict):  # pylint: disable=unused-argument
@@ -183,6 +195,34 @@ async def handle_background_execute_command(
     _write_execute_result(process, error)
 
 
+def execute_worker_live(code: str, namespace: dict) -> WorkerExecutionOutcome:
+    """Execute code with bounded ordered output capture in an executor worker."""
+    collector = OrderedBoundedOutputCollector()
+    error = execute_live(
+        code,
+        namespace,
+        stdout=collector.stdout,
+        stderr=collector.stderr,
+    )
+    return WorkerExecutionOutcome(events=tuple(collector.events), error=error)
+
+
+async def handle_worker_execute_command(
+    process: asyncssh.SSHServerProcess, namespace: dict
+):
+    """Execute code in a worker, then replay buffered events on the event loop."""
+    server: SSHServerHere = process.channel.get_connection().get_owner()
+    data = await process.stdin.read()
+    outcome = await server.run_in_executor(
+        execute_worker_live,
+        code=data,
+        namespace=namespace,
+    )
+    for event in outcome.events:
+        write_event(process.stdout, event.asdict())
+    _write_execute_result(process, outcome.error)
+
+
 async def handle_recent_logs_command(
     process: asyncssh.SSHServerProcess,
     namespace: dict,
@@ -266,6 +306,7 @@ async def handle_client(
             SHELL_COMMAND: handle_shell_command,
             VALUE_COMMAND: handle_value_command,
             EXECUTE_COMMAND: handle_execute_command,
+            WORKER_EXECUTE_COMMAND: handle_worker_execute_command,
         }
         if recent_logs is not None:
             processors[RECENT_LOGS_COMMAND] = partial(

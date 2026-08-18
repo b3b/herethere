@@ -1,5 +1,6 @@
 import asyncio
 import json
+import threading
 from contextlib import redirect_stdout
 from io import StringIO
 from pathlib import Path
@@ -13,6 +14,7 @@ from herethere.everywhere.commands import (
     PING_COMMAND,
     RECENT_LOGS_COMMAND,
     SHELL_COMMAND,
+    WORKER_EXECUTE_COMMAND,
 )
 from herethere.everywhere.shell import ShellResult
 from herethere.everywhere.values import RemoteValueError, dumps_error, dumps_value
@@ -249,6 +251,52 @@ async def test_background_execute_and_get_share_live_namespace(there):
     assert out.getvalue() == ""
     assert err.getvalue() == ""
     assert value == 42
+
+
+@pytest.mark.asyncio
+async def test_worker_execute_returns_buffered_output_and_shares_namespace(there):
+    out = StringIO()
+    err = StringIO()
+
+    execution = await there.execute_worker(
+        "import sys\nworker_client_value = 40\nprint('out')\n"
+        "print('err', file=sys.stderr)",
+        stdout=out,
+        stderr=err,
+    )
+    value = await there.get("worker_client_value + 2")
+
+    assert execution.ok
+    assert out.getvalue() == "out\n"
+    assert err.getvalue() == "err\n"
+    assert value == 42
+
+
+@pytest.mark.asyncio
+async def test_worker_execute_waits_and_replays_only_after_completion(
+    there, server_instance
+):
+    started = threading.Event()
+    release = threading.Event()
+    server_instance.namespace.update(worker_started=started, worker_release=release)
+    out = StringIO()
+    task = asyncio.create_task(
+        there.execute_worker(
+            "worker_started.set()\nprint('buffered')\nworker_release.wait(5)\n",
+            stdout=out,
+        )
+    )
+
+    try:
+        assert await asyncio.to_thread(started.wait, 1)
+        assert out.getvalue() == ""
+        assert not task.done()
+    finally:
+        release.set()
+
+    result = await asyncio.wait_for(task, timeout=1)
+    assert result.ok
+    assert out.getvalue() == "buffered\n"
 
 
 @pytest.mark.asyncio
@@ -607,6 +655,33 @@ async def test_get_background_detects_old_server(mocker):
 
 
 @pytest.mark.asyncio
+async def test_get_worker_uses_worker_value_command(mocker):
+    process = mocker.Mock()
+    process.stdin = mocker.Mock()
+    process.stdout = ReaderOnce(dumps_value(42) + "\n")
+    process.wait = mocker.AsyncMock()
+    client = Client()
+    client.connection = FakeConnectionContext(process)
+
+    assert await client.get_worker("40 + 2") == 42
+    assert process.command == BACKGROUND_VALUE_COMMAND
+
+
+@pytest.mark.asyncio
+async def test_get_worker_detects_old_server(mocker):
+    process = mocker.Mock()
+    process.stdin = mocker.Mock()
+    process.stdout = ReaderOnce("")
+    process.stderr = ReaderOnce("Unknown command")
+    process.wait = mocker.AsyncMock()
+    client = Client()
+    client.connection = FakeConnectionContext(process)
+
+    with pytest.raises(ProtocolVersionError, match="worker execution"):
+        await client.get_worker("42")
+
+
+@pytest.mark.asyncio
 async def test_get_raises_remote_value_error(mocker):
     process = mocker.Mock()
     process.stdin = mocker.Mock()
@@ -707,6 +782,62 @@ async def test_background_structured_old_server_keeps_foreground_cache(mocker):
 
     with pytest.raises(ProtocolVersionError, match="background execution"):
         await client.execute_background("pass")
+
+    assert client.structured_protocol is True
+
+
+@pytest.mark.asyncio
+async def test_worker_structured_client_replays_events_in_protocol_order(mocker):
+    process = protocol_process(
+        mocker,
+        [
+            '{"type":"stream","stream":"stdout","data":"A"}\n',
+            '{"type":"stream","stream":"stderr","data":"B"}\n',
+            '{"type":"stream","stream":"stdout","data":"C"}\n',
+            '{"type":"result","ok":true}\n',
+        ],
+    )
+    client = Client()
+    client.connection = FakeConnectionContext(process)
+    writes = []
+
+    class Writer:
+        def __init__(self, stream):
+            self.stream = stream
+
+        def write(self, data):
+            writes.append((self.stream, data))
+
+        def flush(self):
+            writes.append((self.stream, "flush"))
+
+    result = await client.execute_worker(
+        "pass",
+        stdout=Writer("stdout"),
+        stderr=Writer("stderr"),
+    )
+
+    assert result.ok
+    assert process.command == WORKER_EXECUTE_COMMAND
+    assert writes == [
+        ("stdout", "A"),
+        ("stdout", "flush"),
+        ("stderr", "B"),
+        ("stderr", "flush"),
+        ("stdout", "C"),
+        ("stdout", "flush"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_worker_structured_client_rejects_old_server(mocker):
+    process = protocol_process(mocker, [], "Unknown command")
+    client = Client()
+    client.structured_protocol = True
+    client.connection = FakeConnectionContext(process)
+
+    with pytest.raises(ProtocolVersionError, match="worker execution"):
+        await client.execute_worker("pass")
 
     assert client.structured_protocol is True
 

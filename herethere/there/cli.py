@@ -767,10 +767,12 @@ def ping_command(ctx):
 @click.option(
     "--background",
     is_flag=True,
-    help=(
-        "Execute remote Python in a worker thread. "
-        "The command remains attached and waits for completion."
-    ),
+    help="Run like --worker and wait for completion.",
+)
+@click.option(
+    "--worker",
+    is_flag=True,
+    help="Run Python on a worker thread and wait for it to finish.",
 )
 @click.option(
     "-c",
@@ -780,8 +782,10 @@ def ping_command(ctx):
 )
 @click.argument("file_path", metavar="[FILE]", required=False)
 @click.pass_context
-def run_command(ctx, background, code_text, file_path):
+def run_command(ctx, background, worker, code_text, file_path):
     """Execute a local FILE, inline code, or stdin in the live namespace."""
+    if worker and background:
+        raise click.UsageError("--worker and --background cannot be used together.")
     invocation = get_cli_context(ctx)
     code = _load_text_source(
         file_path,
@@ -796,8 +800,8 @@ def run_command(ctx, background, code_text, file_path):
         stdout, stderr = _text_streams(ctx)
 
     async def operation(client):
-        if background:
-            return await client.execute_background(
+        if worker or background:
+            return await client.execute_worker(
                 code,
                 stdout=stdout,
                 stderr=stderr,
@@ -820,16 +824,13 @@ def _strict_json_value(value):
 
 @cli.command("get")
 @click.option(
-    "--background",
+    "--worker",
     is_flag=True,
-    help=(
-        "Evaluate remote Python in a worker thread. "
-        "The command remains attached and waits for completion."
-    ),
+    help="Evaluate on a worker thread and wait for the value.",
 )
 @click.argument("expression")
 @click.pass_context
-def get_command(ctx, background, expression):
+def get_command(ctx, worker, expression):
     """Get one Python expression value from the live namespace."""
     invocation = get_cli_context(ctx)
     try:
@@ -840,8 +841,8 @@ def get_command(ctx, background, expression):
         ) from exc
 
     async def operation(client):
-        if background:
-            return await client.get_background(expression)
+        if worker:
+            return await client.get_worker(expression)
         return await client.get(expression)
 
     value = _call_remote(invocation.config, invocation.timeout, operation)

@@ -25,6 +25,7 @@ from herethere.everywhere.commands import (
     RECENT_LOGS_COMMAND,
     SHELL_COMMAND,
     VALUE_COMMAND,
+    WORKER_EXECUTE_COMMAND,
 )
 from herethere.everywhere.config import ConnectionConfig
 from herethere.everywhere.logging import logger
@@ -296,7 +297,15 @@ class Client:
         return await self._get_value(
             expression,
             command=BACKGROUND_VALUE_COMMAND,
-            background=True,
+            protocol_kind="background",
+        )
+
+    async def get_worker(self, expression: str):
+        """Evaluate an expression away from the normal application path."""
+        return await self._get_value(
+            expression,
+            command=BACKGROUND_VALUE_COMMAND,
+            protocol_kind="worker",
         )
 
     async def logs(self, max_records: int | None = None) -> RecentLogsSnapshot:
@@ -352,7 +361,7 @@ class Client:
         expression: str,
         *,
         command: str = VALUE_COMMAND,
-        background: bool = False,
+        protocol_kind: str = "foreground",
     ):
         """Run a value command and decode its response."""
         async with self.connection as ssh:
@@ -365,8 +374,8 @@ class Client:
 
                 if not message:
                     stderr = await process.stderr.read()
-                    if background and "Unknown command" in stderr:
-                        raise _background_protocol_version_error()
+                    if protocol_kind != "foreground" and "Unknown command" in stderr:
+                        raise _protocol_version_error_for(protocol_kind)
                     message = "Remote value command returned no output."
                     if stderr:
                         message += f"\nRemote stderr:\n{stderr}"
@@ -408,7 +417,23 @@ class Client:
             code,
             stdout=stdout,
             stderr=stderr,
-            background=True,
+            protocol_kind="background",
+        )
+        return ExecutionResult(error=_remote_error(event))
+
+    async def execute_worker(
+        self,
+        code: str,
+        stdout: TextIO | None = None,
+        stderr: TextIO | None = None,
+    ) -> ExecutionResult:
+        """Execute code in a worker and replay its buffered output."""
+        event = await self._structured_operation(
+            WORKER_EXECUTE_COMMAND,
+            code,
+            stdout=stdout,
+            stderr=stderr,
+            protocol_kind="worker",
         )
         return ExecutionResult(error=_remote_error(event))
 
@@ -500,7 +525,7 @@ class Client:
         payload: str,
         stdout: TextIO | None = None,
         stderr: TextIO | None = None,
-        background: bool = False,
+        protocol_kind: str = "foreground",
     ) -> dict:
         """Run a structured JSON-lines command and return its final event."""
         stdout = stdout or sys.stdout
@@ -555,7 +580,7 @@ class Client:
                 if final_event is None:
                     diagnostic = "".join(diagnostic_stderr)
                     if "Unknown command" in diagnostic:
-                        raise _protocol_version_error_for(background)
+                        raise _protocol_version_error_for(protocol_kind)
                     raise ProtocolError("Remote protocol returned no result event.")
                 if diagnostic_stderr:
                     stderr.write("".join(diagnostic_stderr))
@@ -657,9 +682,18 @@ def _background_protocol_version_error() -> ProtocolVersionError:
     )
 
 
-def _protocol_version_error_for(background: bool) -> ProtocolVersionError:
-    if background:
+def _worker_protocol_version_error() -> ProtocolVersionError:
+    return ProtocolVersionError(
+        "The remote server does not support worker execution. "
+        "Upgrade herethere on the remote server."
+    )
+
+
+def _protocol_version_error_for(protocol_kind: str) -> ProtocolVersionError:
+    if protocol_kind == "background":
         return _background_protocol_version_error()
+    if protocol_kind == "worker":
+        return _worker_protocol_version_error()
     return _protocol_version_error()
 
 

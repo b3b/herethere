@@ -48,8 +48,8 @@ local sandbox.
      Use it only for small-to-medium inspectable values such as counters,
      summaries, or configuration. It rejects statements, but the expression
      itself can have side effects.
-     Add `--background` when the expression blocks or waits and must not block
-     the target application's main thread.
+     Add `--worker` when the expression blocks or waits and should run on a
+     worker thread instead of the remote application's main thread.
      In JSON mode, return a JSON-compatible value. When readable inspection of
      a known binary or third-party value is sufficient, convert it in the
      original expression, for example `there --json get "repr(value)"`; this
@@ -58,10 +58,9 @@ local sandbox.
      prints the value's `repr`.
    - `logs` for recent Python logs.
    - `run` for Python statements, multiline programs, or output-oriented work
-     in the live interpreter. Add `--background` for blocking or long-running
-     work which does not require APIs tied to the application's main or
-     event-loop thread. Background `run` discards user stdout and stderr, so
-     observe its result through state or a later `get` call.
+     in the live interpreter. Add `--worker` for slow or blocking Python which
+     should run on a worker thread instead of the remote application's main
+     thread. The command waits and returns its output when the code finishes.
    - `shell` for a subprocess on the remote host.
    - `upload` or `download` for recursive SFTP transfer.
    - For a large result, prefer returning a remote summary or slice. When the
@@ -92,10 +91,8 @@ there --json --config ./there.env --timeout 30 run --code "print(status)"
   connection dropped; first determine whether it may already have executed.
 - Use `--timeout` for potentially blocking work. `ping` defaults to 10 seconds,
   while other commands have no total timeout by default.
-- Background operations run in a worker thread but remain attached. Keep APIs
-  tied to the application's main or event-loop thread in foreground commands,
-  or explicitly schedule them onto their required thread. Disconnecting or
-  timing out does not cancel worker code already running, so use finite waits.
+- `run --worker` still waits for completion. Disconnecting or timing out does
+  not stop Python code already running, so use finite waits.
 - Avoid putting multiline or quoting-sensitive programs inline. Write or reuse
   a local UTF-8 file and pass it to `run` or `shell`.
 - Remember that `get` and `run` operate in the live application's Python
@@ -110,10 +107,10 @@ Use these common forms:
 
 ```console
 there --json get "app.status"
-there --json get --background "generation_done.wait(180)"
+there --json get --worker "generation_done.wait(180)"
 there --json logs --records 100
 there --json run --code "cache.clear()"
-there --json run --background --code "perform_expensive_work()"
+there --json run --worker --code "perform_expensive_work()"
 there --json run local_script.py
 there --json shell --command "uname -a"
 there --json upload ./artifact.bin remote-directory

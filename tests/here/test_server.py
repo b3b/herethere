@@ -22,6 +22,11 @@ from herethere.everywhere.commands import (
     RECENT_LOGS_COMMAND,
     SHELL_COMMAND,
     VALUE_COMMAND,
+    WORKER_EXECUTE_COMMAND,
+)
+from herethere.everywhere.protocol import (
+    MAX_WORKER_OUTPUT_BYTES,
+    WORKER_OUTPUT_TRUNCATION_MARKER,
 )
 from herethere.everywhere.recent_logs import (
     RECENT_LOGS_PROTOCOL_VERSION,
@@ -35,6 +40,7 @@ from herethere.here.server import (
     RunningServer,
     SSHServerHere,
     _decode_recent_logs_request,
+    execute_worker_live,
     start_server,
 )
 
@@ -751,7 +757,7 @@ async def test_structured_execute_reports_remote_exception(
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "command",
-    (EXECUTE_COMMAND, BACKGROUND_EXECUTE_COMMAND),
+    (EXECUTE_COMMAND, BACKGROUND_EXECUTE_COMMAND, WORKER_EXECUTE_COMMAND),
 )
 async def test_execute_commands_read_input_larger_than_64_kib_through_eof(
     server_instance,
@@ -835,6 +841,124 @@ async def test_background_execute_preserves_structured_exception(
     assert error["remote_type"] == "RuntimeError"
     assert error["message"] == "background failure"
     assert "RuntimeError: background failure" in error["traceback"]
+
+
+@pytest.mark.asyncio
+async def test_worker_execute_buffers_ordered_output_and_runs_off_main(
+    server_instance, connection_config
+):
+    event_loop_thread = threading.get_ident()
+    async with asyncssh.connect(**connection_config.asdict, known_hosts=None) as conn:
+        result = await conn.run(
+            WORKER_EXECUTE_COMMAND,
+            check=True,
+            input=(
+                "import sys, threading\n"
+                "worker_execute_thread = threading.get_ident()\n"
+                "print('A')\n"
+                "print('B', file=sys.stderr)\n"
+                "print('C')\n"
+            ),
+        )
+        thread_result = await conn.run(
+            VALUE_COMMAND,
+            check=True,
+            input="worker_execute_thread",
+        )
+
+    events = [json.loads(line) for line in result.stdout.splitlines()]
+    assert events == [
+        {"type": "stream", "stream": "stdout", "data": "A\n"},
+        {"type": "stream", "stream": "stderr", "data": "B\n"},
+        {"type": "stream", "stream": "stdout", "data": "C\n"},
+        {"type": "result", "ok": True},
+    ]
+    assert result.stderr == ""
+    assert loads_value(thread_result.stdout) != event_loop_thread
+
+
+@pytest.mark.asyncio
+async def test_worker_execute_replays_output_before_error_and_survives_failure(
+    server_instance, connection_config
+):
+    async with asyncssh.connect(**connection_config.asdict, known_hosts=None) as conn:
+        failed = await conn.run(
+            WORKER_EXECUTE_COMMAND,
+            check=True,
+            input="print('before'); raise RuntimeError('worker failure')",
+        )
+        succeeded = await conn.run(
+            WORKER_EXECUTE_COMMAND,
+            check=True,
+            input="print('after')",
+        )
+
+    failed_events = [json.loads(line) for line in failed.stdout.splitlines()]
+    assert failed_events[0] == {
+        "type": "stream",
+        "stream": "stdout",
+        "data": "before\n",
+    }
+    assert failed_events[-2]["stream"] == "stderr"
+    assert "RuntimeError: worker failure" in failed_events[-2]["data"]
+    assert failed_events[-1]["error"]["remote_type"] == "RuntimeError"
+    assert failed_events[-1]["error"]["message"] == "worker failure"
+    assert [json.loads(line) for line in succeeded.stdout.splitlines()] == [
+        {"type": "stream", "stream": "stdout", "data": "after\n"},
+        {"type": "result", "ok": True},
+    ]
+
+
+@pytest.mark.asyncio
+async def test_worker_execute_bounds_unicode_output_and_finishes_execution(
+    server_instance, connection_config
+):
+    async with asyncssh.connect(**connection_config.asdict, known_hosts=None) as conn:
+        result = await conn.run(
+            WORKER_EXECUTE_COMMAND,
+            check=True,
+            input=(
+                f"print('€' * {MAX_WORKER_OUTPUT_BYTES}, end='')\n"
+                "worker_finished_after_truncation = True\n"
+            ),
+        )
+        finished = await conn.run(
+            VALUE_COMMAND,
+            check=True,
+            input="worker_finished_after_truncation",
+        )
+
+    events = [json.loads(line) for line in result.stdout.splitlines()]
+    stream_events = [event for event in events if event["type"] == "stream"]
+    retained = stream_events[0]["data"]
+    assert len(retained.encode("utf-8")) <= MAX_WORKER_OUTPUT_BYTES
+    assert retained.encode("utf-8").decode("utf-8") == retained
+    assert stream_events[-1] == {
+        "type": "stream",
+        "stream": "stderr",
+        "data": WORKER_OUTPUT_TRUNCATION_MARKER,
+    }
+    assert events[-1] == {"type": "result", "ok": True}
+    assert loads_value(finished.stdout) is True
+
+
+def test_execute_worker_live_uses_collector_writers(mocker):
+    seen = {}
+
+    def execute(code, namespace, stdout, stderr):
+        seen.update(code=code, namespace=namespace, stdout=stdout, stderr=stderr)
+
+    mocker.patch("herethere.here.server.execute_live", side_effect=execute)
+    namespace = {}
+
+    outcome = execute_worker_live("pass", namespace)
+
+    assert outcome.error is None
+    assert outcome.events == ()
+    assert seen["code"] == "pass"
+    assert seen["namespace"] is namespace
+    assert seen["stdout"].collector is seen["stderr"].collector
+    assert not hasattr(seen["stdout"], "channel")
 
 
 @pytest.mark.asyncio

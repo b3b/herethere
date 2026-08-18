@@ -1,6 +1,13 @@
 Changelog
 =========
 
+0.3.2
+-----
+
+* Added ``--worker`` for blocking or long-running operations in Jupyter ``%%there``
+  and CLI ``run``/``get`` commands, replacing ``--background`` for synchronous
+  CLI worker execution while keeping it as a compatibility alias
+
 0.3.1
 -----
 

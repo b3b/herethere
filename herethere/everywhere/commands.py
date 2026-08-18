@@ -9,6 +9,7 @@ PING_COMMAND = "ping"
 RECENT_LOGS_COMMAND = "recent-logs"
 SHELL_COMMAND = "shell"
 VALUE_COMMAND = "value"
+WORKER_EXECUTE_COMMAND = "worker-execute-v1"
 
 __all__ = (
     "BACKGROUND_COMMAND",
@@ -20,4 +21,5 @@ __all__ = (
     "RECENT_LOGS_COMMAND",
     "SHELL_COMMAND",
     "VALUE_COMMAND",
+    "WORKER_EXECUTE_COMMAND",
 )

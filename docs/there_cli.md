@@ -147,22 +147,18 @@ Statements are rejected before connecting.
 When `there run` reports `ProtocolVersionError`, upgrade herethere on the remote
 target before retrying.
 
-## Foreground and background Python execution
+## Slow or blocking Python code
 
 By default, `run` and `get` execute Python on the target application's main
-thread. Use `--background` for blocking or long-running operations:
+thread. Use `--worker` for blocking or long-running operations:
 
 ```console
-there run --background --code "perform_expensive_work()"
-there get --background "generation_done.wait(180)"
-there --json get --background "wait_for_generation(180)"
+there run --worker --code "perform_expensive_work()"
+there get --worker "generation_done.wait(180)"
 ```
 
-The CLI waits for completion. Background `run` discards user stdout and stderr
-but still reports exceptions and failure exit codes. Background `get` returns its
-value normally. APIs tied to the application's main or event-loop thread must
-remain foreground or be explicitly scheduled there. Disconnecting or timing out
-does not cancel worker code which is already running, so prefer finite waits.
+The CLI still waits for completion. `run --worker` prints the captured output
+when the code finishes, while `get --worker` returns the resulting value.
 
 ## Running commands in the remote shell
 

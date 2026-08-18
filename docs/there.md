@@ -68,6 +68,18 @@ By default, *%there* executes Python code when no command is specified.
 import this
 ```
 
+By default, Python runs on the remote application's main thread. For slow or
+blocking code, add `--worker` to run it on a worker thread instead. The cell
+waits until the code finishes, then shows its output.
+
+```python
+%%there --worker
+perform_expensive_work()
+```
+
+Use `--background` when you do not want to wait. The cell returns immediately
+while the code continues on a worker thread.
+
 #### %%there shell
 
 ```python
