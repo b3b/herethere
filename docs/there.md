@@ -74,6 +74,15 @@ waits until the code finishes, then shows its output.
 
 ```python
 %%there --worker
+import time
+
+
+def perform_expensive_work():
+    """Simulate a blocking operation."""
+    time.sleep(1)
+    print("Work complete")
+
+
 perform_expensive_work()
 ```
 
