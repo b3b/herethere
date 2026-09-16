@@ -6,6 +6,7 @@ import pytest
 import pytest_asyncio
 from IPython.core.interactiveshell import InteractiveShell
 
+from herethere.everywhere.loop import run_sync
 from herethere.magic import MagicThere
 from herethere.there.commands import NeedDisplay
 from herethere.there.output import LimitedOutput
@@ -76,6 +77,29 @@ async def test_connect_there_can_reload_extension_without_blocking_server_loop(
     await asyncio.to_thread(shell.run_line_magic, "connect-there", "")
 
 
+@pytest.mark.asyncio
+async def test_put_magic_transfers_and_renames_notebook_value(
+    server_instance, connection_config
+):
+    shell = InteractiveShell()
+    value = {"ids": ["a", "b"], "raw": b"data"}
+    shell.user_ns["tasks"] = value
+    magic = MagicThere(shell=shell)
+    await asyncio.to_thread(run_sync, magic.client.connect(connection_config))
+
+    try:
+        await asyncio.to_thread(magic.there, "put tasks")
+        await asyncio.to_thread(magic.there, "put tasks benchmark_tasks")
+
+        assert await asyncio.to_thread(run_sync, magic.client.get("tasks")) == value
+        assert (
+            await asyncio.to_thread(run_sync, magic.client.get("benchmark_tasks"))
+            == value
+        )
+    finally:
+        await asyncio.to_thread(run_sync, magic.client.disconnect())
+
+
 def test_code_executed(call_there_group):
     out = StringIO()
     with redirect_stdout(out):
@@ -100,6 +124,34 @@ def test_there_command_called(
     command.assert_called_once()
     assert command.call_args[0][0] == expected_args
     assert command.call_args[1]["obj"].code == expected_code
+
+
+def test_there_context_receives_ipython_user_namespace(mocker):
+    shell = InteractiveShell()
+    shell.user_ns = {"tasks": [{"id": "one"}]}
+    magic = MagicThere(shell=shell)
+    command = mocker.patch("herethere.there.magic.there_group")
+
+    magic.there("put tasks")
+
+    assert command.call_args.kwargs["obj"].local_namespace is shell.user_ns
+
+
+def test_there_retry_context_receives_ipython_user_namespace(mocker):
+    shell = InteractiveShell()
+    shell.user_ns = {"tasks": []}
+    magic = MagicThere(shell=shell)
+    command = mocker.patch(
+        "herethere.there.magic.there_group",
+        side_effect=[NeedDisplay(maxlen=1), None],
+    )
+    mocker.patch("herethere.there.magic.display")
+
+    magic.there("--background put tasks")
+
+    assert command.call_count == 2
+    for call in command.call_args_list:
+        assert call.kwargs["obj"].local_namespace is shell.user_ns
 
 
 def test_local_command_intercepts_before_there_group(mocker):

@@ -22,6 +22,7 @@ from herethere.everywhere.commands import (
     CODE_COMMAND,
     EXECUTE_COMMAND,
     PING_COMMAND,
+    PUT_COMMAND,
     RECENT_LOGS_COMMAND,
     SHELL_COMMAND,
     VALUE_COMMAND,
@@ -42,7 +43,7 @@ from herethere.everywhere.shell import (
     SHELL_STREAM_EVENT,
     ShellResult,
 )
-from herethere.everywhere.values import loads_value
+from herethere.everywhere.values import RemoteValueError, dumps_put_request, loads_value
 
 
 class ConnectionNotConfiguredError(Exception):
@@ -291,6 +292,44 @@ class Client:
     async def get(self, expression: str):
         """Evaluate a Python expression remotely and return its Python value."""
         return await self._get_value(expression)
+
+    async def put(self, name: str, value) -> None:
+        """Put a Python value into the remote live namespace."""
+        request = dumps_put_request(name, value)
+        async with self.connection as ssh:
+            async with ssh.create_process(PUT_COMMAND) as process:
+                process.stdin.write(request)
+                process.stdin.write_eof()
+                try:
+                    message, diagnostic = await asyncio.gather(
+                        process.stdout.read(),
+                        process.stderr.read(),
+                    )
+                    await process.wait()
+                except asyncio.CancelledError:
+                    process.terminate()
+                    with contextlib.suppress(Exception):
+                        await asyncio.wait_for(process.wait(), timeout=1)
+                    raise
+
+        if not message:
+            if "Unknown command" in diagnostic:
+                raise ProtocolVersionError(
+                    "The remote server does not support putting Python values. "
+                    "Upgrade herethere on the remote server."
+                )
+            detail = f" Remote stderr: {diagnostic}" if diagnostic else ""
+            raise ProtocolError(f"Remote put command returned no output.{detail}")
+        if diagnostic:
+            raise ProtocolError(f"Remote put command failed: {diagnostic}")
+        try:
+            result = loads_value(message)
+        except RemoteValueError:
+            raise
+        except Exception as exc:  # pylint: disable=broad-exception-caught
+            raise ProtocolError("Remote server returned malformed put data.") from exc
+        if result is not None:
+            raise ProtocolError("Remote put command returned an unexpected result.")
 
     async def get_background(self, expression: str):
         """Evaluate a Python expression in a remote executor worker."""

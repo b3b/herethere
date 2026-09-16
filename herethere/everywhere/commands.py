@@ -6,6 +6,7 @@ BACKGROUND_VALUE_COMMAND = "background-value-v1"
 CODE_COMMAND = "code"
 EXECUTE_COMMAND = "execute-v1"
 PING_COMMAND = "ping"
+PUT_COMMAND = "put"
 RECENT_LOGS_COMMAND = "recent-logs"
 SHELL_COMMAND = "shell"
 VALUE_COMMAND = "value"
@@ -18,6 +19,7 @@ __all__ = (
     "CODE_COMMAND",
     "EXECUTE_COMMAND",
     "PING_COMMAND",
+    "PUT_COMMAND",
     "RECENT_LOGS_COMMAND",
     "SHELL_COMMAND",
     "VALUE_COMMAND",

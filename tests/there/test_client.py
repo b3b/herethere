@@ -12,12 +12,18 @@ from herethere.everywhere.commands import (
     BACKGROUND_EXECUTE_COMMAND,
     BACKGROUND_VALUE_COMMAND,
     PING_COMMAND,
+    PUT_COMMAND,
     RECENT_LOGS_COMMAND,
     SHELL_COMMAND,
     WORKER_EXECUTE_COMMAND,
 )
 from herethere.everywhere.shell import ShellResult
-from herethere.everywhere.values import RemoteValueError, dumps_error, dumps_value
+from herethere.everywhere.values import (
+    RemoteValueError,
+    dumps_error,
+    dumps_value,
+    loads_put_request,
+)
 from herethere.there.client import (
     Client,
     ConnectionNotConfiguredError,
@@ -33,6 +39,14 @@ async def test_repeated_ping_keeps_server_available(there):
     assert await there.ping() == "pong"
     assert await there.ping() == "pong"
     assert await there.get("6 * 7") == 42
+
+
+@pytest.mark.asyncio
+async def test_put_normalizes_unicode_name_for_python_lookup(there):
+    await there.put("K", 42)
+
+    assert await there.get("K") == 42
+    assert await there.get("K") == 42
 
 
 @pytest.mark.asyncio
@@ -622,6 +636,91 @@ async def test_get_uses_value_command_and_deserializes_result(mocker):
     assert process.command == "value"
     process.stdin.write.assert_called_once_with("{'ok': True}")
     process.stdin.write_eof.assert_called_once_with()
+    process.wait.assert_awaited_once_with()
+
+
+@pytest.mark.asyncio
+async def test_put_uses_put_command_and_serializes_request(mocker):
+    process = protocol_process(mocker, [dumps_value(None) + "\n"])
+    client = Client()
+    client.connection = FakeConnectionContext(process)
+    value = {"ids": ["a", "b"]}
+
+    assert await client.put("tasks", value) is None
+
+    assert process.command == PUT_COMMAND
+    request = process.stdin.write.call_args.args[0]
+    assert loads_put_request(request) == ("tasks", value)
+    process.stdin.write_eof.assert_called_once_with()
+    process.wait.assert_awaited_once_with()
+
+
+@pytest.mark.asyncio
+async def test_put_validates_before_opening_remote_operation(mocker):
+    client = Client()
+    client.connection = mocker.Mock()
+
+    with pytest.raises(ValueError, match="valid Python variable name"):
+        await client.put("foo.bar", 1)
+
+    client.connection.create_process.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "stdout, stderr, error, message",
+    [
+        ("", "Unknown command", ProtocolVersionError, "Upgrade herethere"),
+        ("", "", ProtocolError, "returned no output"),
+        ("", "broken", ProtocolError, "Remote stderr: broken"),
+        (dumps_value(None), "warning", ProtocolError, "failed: warning"),
+        ("not-json", "", ProtocolError, "malformed put data"),
+        (dumps_value(1), "", ProtocolError, "unexpected result"),
+    ],
+)
+async def test_put_rejects_protocol_failures(mocker, stdout, stderr, error, message):
+    process = protocol_process(mocker, [stdout], stderr)
+    client = Client()
+    client.connection = FakeConnectionContext(process)
+
+    with pytest.raises(error, match=message):
+        await client.put("tasks", [])
+
+
+@pytest.mark.asyncio
+async def test_put_raises_remote_value_error(mocker):
+    process = protocol_process(
+        mocker,
+        [dumps_error(ValueError("bad request"), "Traceback")],
+    )
+    client = Client()
+    client.connection = FakeConnectionContext(process)
+
+    with pytest.raises(RemoteValueError, match="bad request"):
+        await client.put("tasks", [])
+
+
+@pytest.mark.asyncio
+async def test_put_cancellation_terminates_process(mocker):
+    class BlockingReader:
+        async def read(self):
+            await asyncio.Event().wait()
+
+    process = mocker.Mock()
+    process.stdin = mocker.Mock()
+    process.stdout = BlockingReader()
+    process.stderr = BlockingReader()
+    process.wait = mocker.AsyncMock()
+    client = Client()
+    client.connection = FakeConnectionContext(process)
+
+    task = asyncio.create_task(client.put("tasks", []))
+    await asyncio.sleep(0)
+    task.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    process.terminate.assert_called_once_with()
     process.wait.assert_awaited_once_with()
 
 

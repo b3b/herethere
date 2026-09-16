@@ -23,6 +23,7 @@ from herethere.everywhere.commands import (
     CODE_COMMAND,
     EXECUTE_COMMAND,
     PING_COMMAND,
+    PUT_COMMAND,
     RECENT_LOGS_COMMAND,
     SHELL_COMMAND,
     VALUE_COMMAND,
@@ -44,7 +45,7 @@ from herethere.everywhere.recent_logs import (
     create_recent_log_handler,
 )
 from herethere.everywhere.redirected_output import redirect_output
-from herethere.everywhere.values import dumps_error, dumps_value
+from herethere.everywhere.values import dumps_error, dumps_value, loads_put_request
 from herethere.here.config import ServerConfig
 from herethere.here.shell import handle_shell_command
 
@@ -118,6 +119,22 @@ async def handle_value_command(process: asyncssh.SSHServerProcess, namespace: di
             result = eval(data, namespace)  # pylint: disable=eval-used
             result = await maybe_await(result)
         event = dumps_value(result)
+    except Exception as exc:  # pylint: disable=broad-exception-caught
+        event = dumps_error(exc, traceback.format_exc())
+
+    process.stdout.write(event)
+    process.stdout.write("\n")
+    await process.stdout.drain()
+
+
+async def handle_put_command(process: asyncssh.SSHServerProcess, namespace: dict):
+    """Bind one serialized Python value in the live namespace."""
+    data = await process.stdin.read()
+
+    try:
+        name, value = loads_put_request(data)
+        namespace[name] = value
+        event = dumps_value(None)
     except Exception as exc:  # pylint: disable=broad-exception-caught
         event = dumps_error(exc, traceback.format_exc())
 
@@ -299,6 +316,7 @@ async def handle_client(
     try:
         processors = {
             PING_COMMAND: handle_ping_command,
+            PUT_COMMAND: handle_put_command,
             CODE_COMMAND: handle_code_command,
             BACKGROUND_COMMAND: handle_background_code_command,
             BACKGROUND_EXECUTE_COMMAND: handle_background_execute_command,

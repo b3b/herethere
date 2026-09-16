@@ -74,6 +74,14 @@ class GetClientStub:
         return eval(expression)  # pylint: disable=eval-used
 
 
+class PutClientStub:
+    def __init__(self):
+        self.calls = []
+
+    async def put(self, name, value):
+        self.calls.append((name, value))
+
+
 class RunClientStub:
     async def runcode(self, code, stdout=None, stderr=None):
         return None
@@ -468,6 +476,86 @@ def test_get_command_prefers_raw_line_expression():
     assert ctx.code == '"a  b"'
 
 
+def test_put_command_uses_local_namespace_and_default_name():
+    client = PutClientStub()
+    value = [{"id": "one"}]
+    ctx = ContextObject(client=client, code="", local_namespace={"tasks": value})
+
+    there_group(["put", "tasks"], "test", standalone_mode=False, obj=ctx)
+
+    assert client.calls == [("tasks", value)]
+
+
+def test_put_command_renames_remote_binding():
+    client = PutClientStub()
+    ctx = ContextObject(client=client, code="", local_namespace={"tasks": [1]})
+
+    there_group(
+        ["put", "tasks", "benchmark_tasks"],
+        "test",
+        standalone_mode=False,
+        obj=ctx,
+    )
+
+    assert client.calls == [("benchmark_tasks", [1])]
+
+
+def test_put_command_normalizes_names_for_lookup_and_assignment():
+    client = PutClientStub()
+    ctx = ContextObject(client=client, code="", local_namespace={"K": 42})
+
+    there_group(["put", "K", "remote_K"], "test", standalone_mode=False, obj=ctx)
+
+    assert client.calls == [("remote_K", 42)]
+
+
+@pytest.mark.parametrize(
+    "args, namespace, message",
+    [
+        (["put", "missing"], {}, "Local variable 'missing' is not defined"),
+        (["put", "items[0]"], {"items[0]": 1}, "Local name must be"),
+        (["put", "tasks", "foo.bar"], {"tasks": 1}, "Remote name must be"),
+        (["put", "tasks", ""], {"tasks": 1}, "Remote name must be"),
+    ],
+)
+def test_put_command_rejects_invalid_or_missing_names(args, namespace, message):
+    client = PutClientStub()
+    ctx = ContextObject(client=client, code="", local_namespace=namespace)
+
+    with pytest.raises(click.ClickException, match=message):
+        there_group(args, "test", standalone_mode=False, obj=ctx)
+
+    assert client.calls == []
+
+
+def test_put_command_requires_local_namespace():
+    with pytest.raises(click.ClickException, match="namespace is not available"):
+        there_group(
+            ["put", "tasks"],
+            "test",
+            standalone_mode=False,
+            obj=ContextObject(client=PutClientStub(), code=""),
+        )
+
+
+def test_put_command_rejects_background():
+    ctx = ContextObject(
+        client=PutClientStub(),
+        code="",
+        stdout=StringIO(),
+        stderr=StringIO(),
+        local_namespace={"tasks": []},
+    )
+
+    with pytest.raises(click.ClickException, match="put cannot be used"):
+        there_group(
+            ["--background", "put", "tasks"],
+            "test",
+            standalone_mode=False,
+            obj=ctx,
+        )
+
+
 def test_raw_remainder_after_command_returns_empty_without_raw_line():
     ctx = click.Context(
         click.Command("get"),
@@ -562,6 +650,11 @@ def test_file_downloaded_to_default_directory(tmpdir, monkeypatch, call_there_gr
             "download",
             "Usage: there download [OPTIONS] REMOTE_PATH... [LOCAL_PATH]",
             "With one path, download to the current local directory.",
+        ),
+        (
+            "put",
+            "Usage: there put [OPTIONS] LOCAL_NAME [REMOTE_NAME]",
+            "Put a local Jupyter variable into the remote live namespace.",
         ),
     ),
 )

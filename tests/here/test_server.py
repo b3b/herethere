@@ -19,6 +19,7 @@ from herethere.everywhere.commands import (
     CODE_COMMAND,
     EXECUTE_COMMAND,
     PING_COMMAND,
+    PUT_COMMAND,
     RECENT_LOGS_COMMAND,
     SHELL_COMMAND,
     VALUE_COMMAND,
@@ -34,7 +35,11 @@ from herethere.everywhere.recent_logs import (
     create_recent_log_handler,
 )
 from herethere.everywhere.shell import SHELL_PROTOCOL_VERSION
-from herethere.everywhere.values import RemoteValueError, loads_value
+from herethere.everywhere.values import (
+    RemoteValueError,
+    dumps_put_request,
+    loads_value,
+)
 from herethere.here.server import (
     MAX_RECENT_LOGS_REQUEST_BYTES,
     RunningServer,
@@ -538,6 +543,37 @@ async def test_value_command_uses_same_namespace(server_instance, connection_con
             input="value_command_var",
         )
         assert loads_value(result.stdout) == (2, 3)
+
+
+@pytest.mark.asyncio
+async def test_put_command_binds_value_in_live_namespace(
+    server_instance, connection_config
+):
+    value = {"ids": ["a", "b"], "raw": b"data"}
+    async with asyncssh.connect(**connection_config.asdict, known_hosts=None) as conn:
+        result = await conn.run(
+            PUT_COMMAND,
+            check=True,
+            input=dumps_put_request("remote_tasks", value),
+        )
+        fetched = await conn.run(VALUE_COMMAND, check=True, input="remote_tasks")
+
+    assert loads_value(result.stdout) is None
+    assert loads_value(fetched.stdout) == value
+
+
+@pytest.mark.asyncio
+async def test_put_command_does_not_assign_on_invalid_request(
+    server_instance, connection_config
+):
+    async with asyncssh.connect(**connection_config.asdict, known_hosts=None) as conn:
+        await conn.run(CODE_COMMAND, check=True, input="put_atomic = 'before'")
+        result = await conn.run(PUT_COMMAND, check=True, input="{")
+        fetched = await conn.run(VALUE_COMMAND, check=True, input="put_atomic")
+
+    with pytest.raises(RemoteValueError, match="JSONDecodeError"):
+        loads_value(result.stdout)
+    assert loads_value(fetched.stdout) == "before"
 
 
 @pytest.mark.asyncio

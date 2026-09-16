@@ -35,6 +35,9 @@ class CommandClient:
     async def get(self, expression):
         return eval(expression, self.namespace)  # pylint: disable=eval-used
 
+    async def put(self, name, value):
+        self.namespace[name] = value
+
     async def shell(self, code, stdout=None, stderr=None):
         result = subprocess.run(
             code,

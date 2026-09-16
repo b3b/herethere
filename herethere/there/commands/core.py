@@ -2,14 +2,15 @@
 
 import re
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from functools import wraps
-from typing import TextIO
+from typing import Any, TextIO
 
 import click
 
 from herethere.everywhere.loop import run_background, run_sync
+from herethere.everywhere.values import validate_variable_name
 from herethere.there.client import Client
 from herethere.there.history import RecentThereHistory
 
@@ -39,6 +40,7 @@ class ContextObject:
     raw_line: str | None = None
     raw_remainder: str | None = None
     history: RecentThereHistory | None = None
+    local_namespace: Mapping[str, Any] | None = None
 
     def runcode(self):
         """Execute Python code on the remote side."""
@@ -69,6 +71,29 @@ class ContextObject:
         if not self.code:
             raise EmptyCode("Expression to evaluate is not specified.")
         return run_sync(self.client.get(self.code))
+
+    def put(self, local_name: str, remote_name: str | None = None):
+        """Put a local notebook variable into the remote namespace."""
+        if self.background:
+            raise click.ClickException("put cannot be used with --background.")
+        if self.local_namespace is None:
+            raise click.ClickException("Local notebook namespace is not available.")
+
+        try:
+            local_name = validate_variable_name(local_name, kind="Local")
+            target = validate_variable_name(
+                local_name if remote_name is None else remote_name,
+                kind="Remote",
+            )
+        except ValueError as exc:
+            raise click.ClickException(str(exc)) from exc
+        try:
+            value = self.local_namespace[local_name]
+        except KeyError as exc:
+            raise click.ClickException(
+                f"Local variable {local_name!r} is not defined."
+            ) from exc
+        return run_sync(self.client.put(target, value))
 
     def _run_command(self, command: str, code: str):
         """Execute SSH command with a code."""
@@ -188,6 +213,18 @@ def get_value(ctx, expression):
     if expression:
         ctx.obj.code = ctx.obj.raw_remainder or " ".join(expression)
     return ctx.obj.get()
+
+
+@there_group.command("put")
+@click.argument("local_name")
+@click.argument("remote_name", required=False)
+@click.pass_context
+def put_value(ctx, local_name, remote_name):
+    """Put a local Jupyter variable into the remote live namespace.
+
+    REMOTE_NAME defaults to LOCAL_NAME.
+    """
+    return ctx.obj.put(local_name, remote_name)
 
 
 def raw_remainder_after_command(ctx: click.Context) -> str:

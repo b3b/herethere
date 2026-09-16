@@ -135,6 +135,26 @@ medium inspectable values such as counters, summaries, or configuration.
 To avoid accidental large transfers, values whose pickle payload is larger
 than 32 MiB are rejected by default.
 
+#### %there put
+
+Transfer a local Jupyter variable into the remote live namespace.
+
+```python
+config = {"temperature": 0.2, "top_k": 40}
+%there put config
+```
+
+An optional second name changes the remote variable name:
+
+```python
+tasks = [{"id": "a"}, {"id": "b"}]
+%there put tasks benchmark_tasks
+```
+
+`put` accepts variable names rather than local expressions. It is intended for
+small and medium in-memory values; use `%there upload` for large or
+file-oriented data.
+
 #### %there upload
 
 ```python
@@ -283,6 +303,11 @@ await client.runcode("print('Hello there :)')")
 ```python
 await client.runcode("x = 10")
 value = await client.get("x + 1")
+```
+
+```python
+await client.put("settings", {"temperature": 0.2})
+settings = await client.get("settings")
 ```
 
 ```python

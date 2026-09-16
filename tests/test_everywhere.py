@@ -1,4 +1,6 @@
+import json
 import os
+import pickle
 from io import StringIO
 from pathlib import Path
 
@@ -8,7 +10,9 @@ from herethere.everywhere import ConnectionConfig, config, runcode
 from herethere.everywhere.values import (
     RemoteValueError,
     dumps_error,
+    dumps_put_request,
     dumps_value,
+    loads_put_request,
     loads_value,
 )
 
@@ -106,6 +110,99 @@ def test_value_deserialization_rejects_unexpected_event_type():
 
     with pytest.raises(ValueError, match="Unexpected remote value event"):
         loads_value(message)
+
+
+def test_put_request_round_trips_name_and_value():
+    value = {"items": (b"one", None), "enabled": True}
+
+    assert loads_put_request(dumps_put_request("tasks", value)) == ("tasks", value)
+
+
+@pytest.mark.parametrize("name", ["tasks", "_tasks", "run2", "benchmark_tasks"])
+def test_put_request_accepts_valid_variable_names(name):
+    assert loads_put_request(dumps_put_request(name, 1)) == (name, 1)
+
+
+def test_put_request_normalizes_unicode_variable_name():
+    request = dumps_put_request("K", 42)
+
+    assert loads_put_request(request) == ("K", 42)
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "foo.bar",
+        "items[0]",
+        "1tasks",
+        "a-b",
+        "class",
+        "for",
+        "ｃｌａｓｓ",
+        "",
+        None,
+    ],
+)
+def test_put_request_rejects_invalid_variable_names(name):
+    with pytest.raises(ValueError, match="valid Python variable name"):
+        dumps_put_request(name, 1)
+
+
+@pytest.mark.parametrize(
+    "put_data, message",
+    [
+        ([], "exactly 'name' and 'value'"),
+        ({"name": "x"}, "exactly 'name' and 'value'"),
+        ({"name": "x", "value": {}, "extra": 1}, "exactly 'name' and 'value'"),
+        ({"name": "class", "value": {}}, "valid Python variable name"),
+        ({"name": "x", "value": []}, "complete value event"),
+        (
+            {
+                "name": "x",
+                "value": {"type": "error", "serializer": "pickle", "data": ""},
+            },
+            "event type",
+        ),
+        (
+            {"name": "x", "value": {"type": "value", "serializer": "json", "data": ""}},
+            "Unknown serializer",
+        ),
+        (
+            {
+                "name": "x",
+                "value": {"type": "value", "serializer": "pickle", "data": 1},
+            },
+            "must be a string",
+        ),
+        (
+            {
+                "name": "x",
+                "value": {"type": "value", "serializer": "pickle", "data": "!"},
+            },
+            "invalid base64",
+        ),
+    ],
+)
+def test_put_request_rejects_invalid_envelopes(put_data, message):
+    with pytest.raises((TypeError, ValueError), match=message):
+        loads_put_request(json.dumps(put_data))
+
+
+def test_put_request_rejects_oversized_decoded_payload():
+    request = dumps_put_request("value", "large")
+
+    with pytest.raises(ValueError, match="too large"):
+        loads_put_request(request, max_payload_size=0)
+
+
+def test_put_request_rejects_invalid_pickle():
+    request = {
+        "name": "value",
+        "value": {"type": "value", "serializer": "pickle", "data": "bm90LXBpY2tsZQ=="},
+    }
+
+    with pytest.raises(pickle.UnpicklingError):
+        loads_put_request(json.dumps(request))
 
 
 @pytest.mark.parametrize(

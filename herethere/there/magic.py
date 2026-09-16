@@ -84,6 +84,7 @@ class MagicThere(MagicEverywhere):
                     cell,
                     raw_line=line,
                     history=self.recent_there_history,
+                    local_namespace=self.shell.user_ns if self.shell else None,
                 )
             )
         except NeedDisplay as exc:
@@ -97,6 +98,7 @@ class MagicThere(MagicEverywhere):
                     stderr=out,
                     raw_line=line,
                     history=self.recent_there_history,
+                    local_namespace=self.shell.user_ns if self.shell else None,
                 )
             )
 
