@@ -50,6 +50,37 @@ class ConnectionNotConfiguredError(Exception):
     """Connection configuration is missing."""
 
 
+class HostKeyMismatchError(asyncssh.HostKeyNotVerifiable):
+    """The SSH server host key does not match the configured fingerprint."""
+
+    def __init__(self, *, expected: str, observed: str, host: str, port: int):
+        self.expected = expected
+        self.observed = observed
+        self.host = host
+        self.port = port
+        super().__init__(
+            f"SSH host key verification failed for {host}:{port}.\n\n"
+            f"Expected:\n  {expected}\n\n"
+            f"Received:\n  {observed}\n\n"
+            "Compare the received fingerprint with the host key shown on the "
+            "remote device."
+        )
+
+
+class _PinnedHostKeyClient(asyncssh.SSHClient):
+    """Validate the server public key against one configured fingerprint."""
+
+    def __init__(self, expected_fingerprint: str):
+        if ":" not in expected_fingerprint:
+            expected_fingerprint = f"SHA256:{expected_fingerprint}"
+        self.expected_fingerprint = expected_fingerprint
+        self.observed_fingerprint: str | None = None
+
+    def validate_host_public_key(self, host, addr, port, key) -> bool:
+        self.observed_fingerprint = key.get_fingerprint("sha256")
+        return self.observed_fingerprint == self.expected_fingerprint
+
+
 class ProtocolVersionError(RuntimeError):
     """The remote server does not support a required protocol command."""
 
@@ -200,7 +231,33 @@ class PersistentConnection(AbstractAsyncContextManager):
         """Establish connection."""
         if not self.config:
             raise ConnectionNotConfiguredError("Connection is not configured.")
-        self.connection = await asyncssh.connect(**self.config.asdict, known_hosts=None)
+
+        options = self.config.ssh_options
+        expected = self.config.host_key_sha256
+        if expected is None:
+            self.connection = await asyncssh.connect(**options, known_hosts=None)
+            return self.connection
+
+        validator = _PinnedHostKeyClient(expected)
+        try:
+            self.connection = await asyncssh.connect(
+                **options,
+                known_hosts=asyncssh.import_known_hosts(""),
+                # GSS key exchange bypasses public host-key validation.
+                gss_kex=False,
+                x509_trusted_certs=None,
+                x509_trusted_cert_paths=[],
+                client_factory=lambda: validator,
+            )
+        except asyncssh.HostKeyNotVerifiable as exc:
+            if validator.observed_fingerprint is None:
+                raise
+            raise HostKeyMismatchError(
+                expected=validator.expected_fingerprint,
+                observed=validator.observed_fingerprint,
+                host=self.config.host,
+                port=self.config.port,
+            ) from exc
         return self.connection
 
 

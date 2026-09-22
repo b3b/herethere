@@ -26,8 +26,15 @@ class ServerConfig(ConnectionConfig):
         key_path: str = "./ssh_host_key",
         sftp_root: str = ".",
         chroot: str | None = None,
+        host_key_sha256: str | None = None,
     ):
-        super().__init__(host, port, username, password)
+        super().__init__(
+            host,
+            port,
+            username,
+            password,
+            host_key_sha256=host_key_sha256,
+        )
         self.key_path = key_path
         if chroot is not None:
             if sftp_root == ".":

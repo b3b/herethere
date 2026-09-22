@@ -22,6 +22,7 @@ from herethere.there.cli import (
     CLIContext,
     ConnectionFailure,
     ExitCode,
+    HostKeyMismatchFailure,
     LocalIOError,
     OperationTimeout,
     PluginError,
@@ -31,6 +32,7 @@ from herethere.there.cli import (
     get_cli_context,
     load_connection_config,
 )
+from herethere.there.client import HostKeyMismatchError
 
 
 class EntryPointStub:
@@ -366,6 +368,35 @@ def test_json_error_mapping(monkeypatch, exception, exit_code, error_type):
     assert payload["error"]["type"] == error_type
     assert payload["stdout"] == ""
     assert payload["stderr"] == ""
+
+
+def test_host_key_mismatch_json_error_has_structured_details(monkeypatch):
+    mismatch = HostKeyMismatchError(
+        expected="SHA256:expected",
+        observed="SHA256:observed",
+        host="device.local",
+        port=8022,
+    )
+
+    @click.command()
+    def failure():
+        raise HostKeyMismatchFailure(mismatch)
+
+    monkeypatch.setattr(
+        cli_module, "_entry_points", lambda: (EntryPointStub("failure", failure),)
+    )
+    result, payload = invoke_json(["failure"])
+
+    assert result.exit_code == ExitCode.CONNECTION
+    assert payload["error"] == {
+        "type": "HostKeyMismatchError",
+        "phase": "connection",
+        "message": str(mismatch),
+        "host": "device.local",
+        "port": 8022,
+        "expected_host_key_sha256": "SHA256:expected",
+        "observed_host_key_sha256": "SHA256:observed",
+    }
 
 
 def test_bounded_collector_retains_byte_tail_and_metadata():
@@ -1394,6 +1425,36 @@ def test_remote_operation_with_no_timeout_and_connection_error(monkeypatch):
                 lambda client: asyncio.sleep(0),
             )
         )
+
+
+def test_remote_operation_preserves_host_key_mismatch_details(monkeypatch):
+    mismatch = HostKeyMismatchError(
+        expected="wrong",
+        observed="SHA256:observed",
+        host="device.local",
+        port=8022,
+    )
+
+    class ClientStub:
+        async def connect(self, config):
+            del config
+            raise mismatch
+
+        async def disconnect(self):
+            pass
+
+    monkeypatch.setattr(cli_module, "Client", ClientStub)
+    monkeypatch.setattr(cli_module, "load_connection_config", lambda config: object())
+
+    with pytest.raises(HostKeyMismatchFailure) as caught:
+        asyncio.run(
+            cli_module._run_remote_operation(
+                None,
+                None,
+                lambda client: asyncio.sleep(0),
+            )
+        )
+    assert caught.value.details["observed_host_key_sha256"] == "SHA256:observed"
 
 
 def test_remote_operation_rejects_expired_budget(monkeypatch):

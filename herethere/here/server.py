@@ -417,11 +417,13 @@ class RunningServer:
         executor: ThreadPoolExecutor,
         connections: set[asyncssh.SSHServerConnection],
         recent_logs: RecentLogHandler | None = None,
+        host_key_sha256: str | None = None,
     ):
         self.server = server
         self.executor = executor
         self.connections = connections
         self.recent_logs = recent_logs
+        self.host_key_sha256 = host_key_sha256
         self._recent_logs_attached = recent_logs is not None
         self.namespace = namespace
         self.namespace["ssh_server_closed"] = threading.Event()
@@ -516,6 +518,11 @@ def generate_private_key(path: str):
     asyncssh.generate_private_key("ssh-ed25519").write_private_key(path)
 
 
+def get_server_host_key_fingerprint(path: str) -> str:
+    """Read the SHA-256 fingerprint of an existing server host key."""
+    return asyncssh.read_private_key(path).get_fingerprint("sha256")
+
+
 async def start_server(
     config: ServerConfig,
     namespace: dict = None,
@@ -534,6 +541,8 @@ async def start_server(
     if not os.path.exists(config.key_path):
         logger.info("Generating new private key.")
         generate_private_key(config.key_path)
+    host_key_sha256 = get_server_host_key_fingerprint(config.key_path)
+    logger.info("SSH host key: %s", host_key_sha256)
 
     if namespace is None:
         namespace = {}
@@ -584,4 +593,5 @@ async def start_server(
         executor=executor,
         connections=connections,
         recent_logs=recent_logs,
+        host_key_sha256=host_key_sha256,
     )

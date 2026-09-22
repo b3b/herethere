@@ -58,6 +58,7 @@ dev = [
     "jupytext",
     "nbconvert",
     "pylint",
+    "pyopenssl",
     "pytest",
     "pytest-asyncio",
     "pytest-cov",

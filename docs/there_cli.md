@@ -88,9 +88,19 @@ THERE_HOST=127.0.0.1
 THERE_PORT=8022
 THERE_USERNAME=here
 THERE_PASSWORD=secret
+
+# Optional server host-key fingerprint.
+THERE_HOST_KEY_SHA256=AbCdEf...
 ```
 
 Environment variables with the same names override values from the file.
+When `THERE_HOST_KEY_SHA256` is set, every connection verifies the server's
+persistent SSH identity before authentication. An empty or whitespace-only
+value disables pinning, including when an environment variable overrides a
+fingerprint in the config file. A value prefixed with `SHA256:`
+is accepted too. The server logs the fingerprint at startup and exposes it
+through its Python API. The pin remains valid if the
+device IP changes and changes when the SSH host key changes.
 
 `--timeout` limits how long the operation may take. `--max-output` controls
 how many bytes of each output stream JSON mode retains. The default is 65536

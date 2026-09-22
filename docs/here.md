@@ -67,6 +67,8 @@ python -m herethere.here
 ```
 
 This is the same as the *%here* command: configuration is loaded from here.env and the environment.
+The command logs the persistent SSH host-key fingerprint at startup. Clients
+can optionally use this value in `THERE_HOST_KEY_SHA256`.
 
 
 ## Using it in code
@@ -76,7 +78,16 @@ from herethere.here import ServerConfig, start_server
 config = ServerConfig.load(prefix="here")
 config.port = 8024
 server = await start_server(config)
-print(server)
+print(server.host_key_sha256)
+```
+
+To read the fingerprint from an existing key, use its path. This helper does
+not create a key; a missing file raises `FileNotFoundError`.
+
+```python
+from herethere.here import get_server_host_key_fingerprint
+
+print(get_server_host_key_fingerprint(config.key_path))
 ```
 
 ```python

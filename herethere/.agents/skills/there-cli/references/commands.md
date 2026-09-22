@@ -30,9 +30,17 @@ THERE_HOST=127.0.0.1
 THERE_PORT=8022
 THERE_USERNAME=here
 THERE_PASSWORD=secret
+# Optional: pin the server's SSH host key.
+THERE_HOST_KEY_SHA256=AbCdEf...
 ```
 
 Variables in the process environment override values from the file.
+When `THERE_HOST_KEY_SHA256` is set, each connection checks the server's
+public-key fingerprint before password authentication. A value prefixed with
+`SHA256:` is accepted too. The server logs its fingerprint at startup and
+exposes it as `RunningServer.host_key_sha256`.
+`get_server_host_key_fingerprint(path)` reads an existing server key; it does
+not create one. A missing key file raises `FileNotFoundError`.
 
 `there ping` validates connection, authentication, command routing, and the
 herethere response. It does not prove that application-specific state is ready.
@@ -167,6 +175,10 @@ Every JSON response contains at least:
 On failure, `ok` is `false`, and `error` includes a type, phase, and readable
 message. JSON mode emits no extra traceback or messages outside this object.
 When a stream is truncated, the retained text is the end of that stream.
+For a pin mismatch, `error.type` is `HostKeyMismatchError` and `error` also
+contains `host`, `port`, `expected_host_key_sha256`, and
+`observed_host_key_sha256`. Compare the observed value with a separately
+trusted server source before updating the pin.
 
 ## Exit codes
 

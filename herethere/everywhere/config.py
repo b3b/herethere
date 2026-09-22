@@ -1,11 +1,11 @@
 """herethere.everywhere.config"""
 
 import os
-from dataclasses import asdict, dataclass, fields
+from dataclasses import MISSING, asdict, dataclass, field, fields
 from os import environ
 from typing import Any
 
-from dotenv import dotenv_values, find_dotenv, set_key
+from dotenv import dotenv_values, find_dotenv, set_key, unset_key
 
 
 class ConnectionConfigError(Exception):
@@ -36,14 +36,24 @@ class ConnectionConfig:
     port: int
     username: str
     password: str
+    host_key_sha256: str | None = field(default=None, kw_only=True)
 
     def __post_init__(self):
         self.port = int(self.port)
+        if self.host_key_sha256 is not None:
+            self.host_key_sha256 = self.host_key_sha256.strip() or None
 
     @property
     def asdict(self) -> dict[str, Any]:
         """Dict represntation of the instance."""
         return asdict(self)
+
+    @property
+    def ssh_options(self) -> dict[str, Any]:
+        """Connection options accepted directly by AsyncSSH."""
+        options = self.asdict
+        options.pop("host_key_sha256")
+        return options
 
     @classmethod
     def load(cls, prefix: str = "", path: str = None) -> "ConnectionConfig":
@@ -63,27 +73,35 @@ class ConnectionConfig:
     @classmethod
     def load_from_dict(cls, *, env: dict[str, str], prefix: str) -> "ConnectionConfig":
         """Load config from dictionary."""
-        try:
-            return cls(
-                **{
-                    field.name: env[prefixed_key(prefix=prefix, key=field.name)]
-                    for field in fields(cls)
-                    if field.name not in ("host", "port")
-                },
-                host=env.get(prefixed_key(prefix=prefix, key="host"), "127.0.0.1"),
-                port=env.get(prefixed_key(prefix=prefix, key="port"), 8022),
-            )
-        except KeyError as exc:
-            raise ConnectionConfigError(
-                f"Connection is not configured: {exc} is not set."
-            ) from None
+        values = {}
+        for config_field in fields(cls):
+            key = prefixed_key(prefix=prefix, key=config_field.name)
+            if config_field.name == "host":
+                values[config_field.name] = env.get(key, "127.0.0.1")
+            elif config_field.name == "port":
+                values[config_field.name] = env.get(key, 8022)
+            elif key in env:
+                values[config_field.name] = env[key]
+            elif (
+                config_field.default is MISSING
+                and config_field.default_factory is MISSING
+            ):
+                raise ConnectionConfigError(
+                    f"Connection is not configured: {key!r} is not set."
+                )
+        return cls(**values)
 
     def save(self, path: str, prefix: str = ""):
         """Save config to the given location."""
         if not os.path.exists(path):
             with open(path, "w", encoding="utf-8"):
                 pass
+        saved_keys = dotenv_values(dotenv_path=path)
         for key, value in self.asdict.items():
-            result = set_key(path, prefixed_key(prefix=prefix, key=key), str(value))[0]
+            env_key = prefixed_key(prefix=prefix, key=key)
+            if value is None:
+                result = env_key not in saved_keys or unset_key(path, env_key)[0]
+            else:
+                result = set_key(path, env_key, str(value))[0]
             if not result:
                 raise ConnectionConfigError("Error while saving connection config.")

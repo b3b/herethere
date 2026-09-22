@@ -24,6 +24,7 @@ from herethere.everywhere.shell import MAX_SHELL_COMMAND_BYTES
 from herethere.everywhere.values import RemoteValueError
 from herethere.there.client import (
     Client,
+    HostKeyMismatchError,
     ProtocolError,
     ProtocolVersionError,
     RemoteError,
@@ -74,6 +75,23 @@ class ConnectionFailure(CLIError):
     exit_code = ExitCode.CONNECTION
     error_type = "ConnectionError"
     phase = "connection"
+
+
+class HostKeyMismatchFailure(ConnectionFailure):
+    """The server identity differs from the configured host-key pin."""
+
+    error_type = "HostKeyMismatchError"
+
+    def __init__(self, error: HostKeyMismatchError):
+        super().__init__(
+            str(error),
+            details={
+                "host": error.host,
+                "port": error.port,
+                "expected_host_key_sha256": error.expected,
+                "observed_host_key_sha256": error.observed,
+            },
+        )
 
 
 class LocalIOError(CLIError):
@@ -699,6 +717,8 @@ async def _run_remote_operation(
     try:
         try:
             await wait_for_phase(client.connect(config), "connection")
+        except HostKeyMismatchError as exc:
+            raise HostKeyMismatchFailure(exc) from exc
         except (asyncssh.PermissionDenied, OperationTimeout):
             raise
         except (asyncssh.Error, OSError) as exc:

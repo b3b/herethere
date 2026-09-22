@@ -48,7 +48,19 @@ THERE_PORT=8022
 # Credentials
 THERE_USERNAME=debug
 THERE_PASSWORD=xxx
+
+# Optional server host-key fingerprint.
+THERE_HOST_KEY_SHA256=AbCdEf...
 ```
+
+`THERE_HOST_KEY_SHA256` is optional for compatibility. When set, every
+connection and reconnect verifies the server host key before password
+authentication. An empty or whitespace-only value disables pinning, including
+when an environment variable overrides a fingerprint in the config file.
+A value prefixed with `SHA256:` is accepted too. The server logs
+this fingerprint at startup and exposes it through its Python API. Changing the
+device IP does not affect the pin;
+replacing or regenerating the SSH host key changes it.
 
 
 ### %there group of commands

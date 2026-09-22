@@ -89,6 +89,10 @@ there --json --config ./there.env --timeout 30 run --code "print(status)"
   comprehensions can execute code or mutate state.
 - Do not retry a mutating command merely because output was truncated or the
   connection dropped; first determine whether it may already have executed.
+- If a configured host-key fingerprint differs from the server's key, stop the
+  connection attempt. Compare the observed fingerprint with the server startup
+  log or another separately trusted source before changing the pin. Do not
+  clear `THERE_HOST_KEY_SHA256` just to make the connection succeed.
 - Use `--timeout` for potentially blocking work. `ping` defaults to 10 seconds,
   while other commands have no total timeout by default.
 - `run --worker` still waits for completion. Disconnecting or timing out does

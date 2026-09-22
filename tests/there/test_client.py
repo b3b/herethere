@@ -8,6 +8,7 @@ from pathlib import Path
 import asyncssh
 import pytest
 
+from herethere.everywhere import ConnectionConfig
 from herethere.everywhere.commands import (
     BACKGROUND_EXECUTE_COMMAND,
     BACKGROUND_VALUE_COMMAND,
@@ -24,9 +25,12 @@ from herethere.everywhere.values import (
     dumps_value,
     loads_put_request,
 )
+from herethere.here import start_server
+from herethere.here.server import SSHServerHere
 from herethere.there.client import (
     Client,
     ConnectionNotConfiguredError,
+    HostKeyMismatchError,
     PersistentConnection,
     ProtocolError,
     ProtocolVersionError,
@@ -39,6 +43,196 @@ async def test_repeated_ping_keeps_server_available(there):
     assert await there.ping() == "pong"
     assert await there.ping() == "pong"
     assert await there.get("6 * 7") == 42
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("with_prefix", [False, True])
+async def test_correct_host_key_pin_allows_connection(
+    server_instance, connection_config, with_prefix
+):
+    fingerprint = server_instance.host_key_sha256
+    config = ConnectionConfig(
+        connection_config.host,
+        connection_config.port,
+        connection_config.username,
+        connection_config.password,
+        host_key_sha256=(
+            fingerprint if with_prefix else fingerprint.removeprefix("SHA256:")
+        ),
+    )
+    client = Client()
+    try:
+        await client.connect(config)
+        assert await client.ping() == "pong"
+    finally:
+        await client.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_pin_disables_gss_key_exchange_even_when_ssh_config_enables_it(
+    tmp_path, monkeypatch, server_instance, connection_config
+):
+    ssh_directory = tmp_path / ".ssh"
+    ssh_directory.mkdir()
+    (ssh_directory / "config").write_text("Host *\n    GSSAPIKeyExchange yes\n")
+    monkeypatch.setenv("HOME", str(tmp_path))
+    original_connect = asyncssh.connect
+    checked_connections = 0
+
+    async def connect_with_resolved_options(**kwargs):
+        nonlocal checked_connections
+        options = asyncssh.SSHClientConnectionOptions(**kwargs)
+        assert options.gss_kex is False
+        checked_connections += 1
+        return await original_connect(**kwargs)
+
+    monkeypatch.setattr(asyncssh, "connect", connect_with_resolved_options)
+    connection_config.host_key_sha256 = server_instance.host_key_sha256
+    client = Client()
+    try:
+        await client.connect(connection_config)
+        assert await client.ping() == "pong"
+        await client.disconnect()
+        await client.connection.reconnect()
+        assert await client.ping() == "pong"
+        assert checked_connections == 2
+    finally:
+        await client.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_wrong_host_key_pin_rejects_connection(
+    server_instance, connection_config
+):
+    config = ConnectionConfig(
+        connection_config.host,
+        connection_config.port,
+        connection_config.username,
+        connection_config.password,
+        host_key_sha256="WRONG_VALUE",
+    )
+    client = Client()
+
+    with pytest.raises(HostKeyMismatchError) as caught:
+        await client.connect(config)
+
+    assert caught.value.expected == "SHA256:WRONG_VALUE"
+    assert caught.value.observed == server_instance.host_key_sha256
+    assert caught.value.host == connection_config.host
+    assert caught.value.port == connection_config.port
+    assert "Compare the received fingerprint" in str(caught.value)
+
+
+@pytest.mark.asyncio
+async def test_unobserved_host_key_error_is_preserved(mocker, connection_config):
+    error = asyncssh.HostKeyNotVerifiable("unrelated host-key error")
+    mocker.patch(
+        "herethere.there.client.asyncssh.connect",
+        new=mocker.AsyncMock(side_effect=error),
+    )
+    connection = PersistentConnection()
+    connection.config = ConnectionConfig(
+        connection_config.host,
+        connection_config.port,
+        connection_config.username,
+        connection_config.password,
+        host_key_sha256="SHA256:expected",
+    )
+
+    with pytest.raises(asyncssh.HostKeyNotVerifiable) as caught:
+        await connection.reconnect()
+
+    assert caught.value is error
+
+
+@pytest.mark.asyncio
+async def test_known_hosts_cannot_bypass_pin_or_trigger_authentication(
+    tmp_path, monkeypatch, server_config, connection_config
+):
+    class AuthenticationTrackingServer(SSHServerHere):
+        password_attempts = 0
+
+        def validate_password(self, username, password):
+            type(self).password_attempts += 1
+            return super().validate_password(username, password)
+
+    server = await start_server(
+        server_config,
+        server_factory=AuthenticationTrackingServer,
+    )
+    ssh_directory = tmp_path / ".ssh"
+    ssh_directory.mkdir()
+    public_key = asyncssh.read_private_key(server_config.key_path).export_public_key(
+        "openssh"
+    )
+    (ssh_directory / "known_hosts").write_bytes(
+        f"[{connection_config.host}]:{connection_config.port} ".encode() + public_key
+    )
+    monkeypatch.setenv("HOME", str(tmp_path))
+    config = ConnectionConfig(
+        connection_config.host,
+        connection_config.port,
+        connection_config.username,
+        connection_config.password,
+        host_key_sha256="SHA256:wrong",
+    )
+    client = Client()
+    try:
+        with pytest.raises(HostKeyMismatchError):
+            await client.connect(config)
+        assert AuthenticationTrackingServer.password_attempts == 0
+    finally:
+        await client.disconnect()
+        await server.stop()
+
+
+@pytest.mark.asyncio
+async def test_trusted_x509_certificate_cannot_bypass_pin(tmp_path, monkeypatch):
+    class AuthenticationTrackingServer(asyncssh.SSHServer):
+        password_attempts = 0
+
+        def begin_auth(self, username):
+            return True
+
+        def password_auth_supported(self):
+            return True
+
+        def validate_password(self, username, password):
+            type(self).password_attempts += 1
+            return True
+
+    ca = asyncssh.generate_private_key("ssh-rsa")
+    key = asyncssh.generate_private_key("ssh-rsa")
+    ca_cert = ca.generate_x509_ca_certificate(ca, "CN=Test CA")
+    cert = ca.generate_x509_host_certificate(
+        key, "CN=localhost", issuer="CN=Test CA", principals=["localhost"]
+    )
+    ssh_directory = tmp_path / ".ssh"
+    ssh_directory.mkdir()
+    (ssh_directory / "ca-bundle.crt").write_bytes(ca_cert.export_certificate("pem"))
+    monkeypatch.setenv("HOME", str(tmp_path))
+    server = await asyncssh.create_server(
+        AuthenticationTrackingServer,
+        "127.0.0.1",
+        0,
+        server_host_keys=[(key, cert)],
+    )
+    client = Client()
+    config = ConnectionConfig(
+        "localhost",
+        server.get_port(),
+        "here",
+        "secret",
+        host_key_sha256="SHA256:wrong",
+    )
+    try:
+        with pytest.raises(HostKeyMismatchError):
+            await client.connect(config)
+        assert AuthenticationTrackingServer.password_attempts == 0
+    finally:
+        await client.disconnect()
+        server.close()
+        await server.wait_closed()
 
 
 @pytest.mark.asyncio

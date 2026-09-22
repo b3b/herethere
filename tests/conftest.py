@@ -119,7 +119,7 @@ async def server_instance(server_config):
 
 @pytest.fixture
 def client_instance(connection_config):
-    return asyncssh.connect(**connection_config.asdict, known_hosts=None)
+    return asyncssh.connect(**connection_config.ssh_options, known_hosts=None)
 
 
 @pytest.fixture

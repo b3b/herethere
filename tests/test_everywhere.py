@@ -243,6 +243,36 @@ def test_connection_config_host_and_port_default_to_localhost():
     assert config.port == 8022
 
 
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [(None, None), ("", None), ("   ", None), (" SHA256:abc ", "SHA256:abc")],
+)
+def test_connection_config_normalizes_host_key_pin(value, expected):
+    config = ConnectionConfig(
+        "localhost",
+        8022,
+        "here",
+        "there",
+        host_key_sha256=value,
+    )
+
+    assert config.host_key_sha256 == expected
+    assert "host_key_sha256" not in config.ssh_options
+
+
+def test_connection_config_loads_optional_host_key_pin():
+    config = ConnectionConfig.load_from_dict(
+        env={
+            "THERE_USERNAME": "here",
+            "THERE_PASSWORD": "there",
+            "THERE_HOST_KEY_SHA256": " SHA256:abc ",
+        },
+        prefix="there",
+    )
+
+    assert config.host_key_sha256 == "SHA256:abc"
+
+
 def test_connection_not_found(tmp_environ):
     with pytest.raises(config.ConnectionConfigError):
         ConnectionConfig.load(path="no-such-config-here", prefix="there")
@@ -258,6 +288,28 @@ def test_connection_config_saved(tmpdir, prefix):
     ConnectionConfig("localhost", "9022", "here", "there").save(path, prefix=prefix)
 
     ConnectionConfig.load(path=path, prefix=prefix)
+
+
+def test_connection_config_save_and_remove_host_key_pin(tmp_path, tmp_environ):
+    path = tmp_path / "there.env"
+    configured = ConnectionConfig(
+        "localhost",
+        8022,
+        "here",
+        "there",
+        host_key_sha256="SHA256:abc",
+    )
+    configured.save(path, prefix="there")
+
+    assert ConnectionConfig.load(path=path, prefix="there").host_key_sha256 == (
+        "SHA256:abc"
+    )
+
+    configured.host_key_sha256 = None
+    configured.save(path, prefix="there")
+
+    assert "THERE_HOST_KEY_SHA256" not in path.read_text(encoding="utf-8")
+    assert ConnectionConfig.load(path=path, prefix="there").host_key_sha256 is None
 
 
 def test_connection_config_save_error(mocker, tmp_path):

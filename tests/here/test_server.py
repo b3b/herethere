@@ -46,6 +46,7 @@ from herethere.here.server import (
     SSHServerHere,
     _decode_recent_logs_request,
     execute_worker_live,
+    get_server_host_key_fingerprint,
     start_server,
 )
 
@@ -58,7 +59,7 @@ async def test_server_is_serving(server_instance):
 
 @pytest.mark.asyncio
 async def test_client_connected(server_instance, connection_config):
-    async with asyncssh.connect(**connection_config.asdict, known_hosts=None):
+    async with asyncssh.connect(**connection_config.ssh_options, known_hosts=None):
         pass
 
 
@@ -101,7 +102,7 @@ async def test_server_stop_disconnects_sleeping_client(
     async def keep_client_connected():
         """Open an SSH connection and wait until the server closes it."""
         async with asyncssh.connect(
-            **connection_config.asdict,
+            **connection_config.ssh_options,
             known_hosts=None,
         ) as conn:
             client_connected.set()
@@ -140,7 +141,7 @@ async def test_server_port_can_be_reused_after_stop_with_connected_client(
     conn = None
 
     try:
-        conn = await asyncssh.connect(**connection_config.asdict, known_hosts=None)
+        conn = await asyncssh.connect(**connection_config.ssh_options, known_hosts=None)
 
         await server_instance.stop()
 
@@ -418,21 +419,27 @@ async def test_log_wait_closed_results_handles_cancelled_and_failed_tasks(mocker
 
 @pytest.mark.asyncio
 async def test_pong_returned(server_instance, connection_config):
-    async with asyncssh.connect(**connection_config.asdict, known_hosts=None) as conn:
+    async with asyncssh.connect(
+        **connection_config.ssh_options, known_hosts=None
+    ) as conn:
         result = await conn.run(PING_COMMAND, check=True)
         assert result.stdout == "pong"
 
 
 @pytest.mark.asyncio
 async def test_line_executed(server_instance, connection_config):
-    async with asyncssh.connect(**connection_config.asdict, known_hosts=None) as conn:
+    async with asyncssh.connect(
+        **connection_config.ssh_options, known_hosts=None
+    ) as conn:
         result = await conn.run(CODE_COMMAND, check=True, input="print('hello there')")
         assert result.stdout == "hello there\n"
 
 
 @pytest.mark.asyncio
 async def test_backgroud_line_executed(server_instance, connection_config):
-    async with asyncssh.connect(**connection_config.asdict, known_hosts=None) as conn:
+    async with asyncssh.connect(
+        **connection_config.ssh_options, known_hosts=None
+    ) as conn:
         result = await conn.run(
             BACKGROUND_COMMAND,
             check=True,
@@ -463,7 +470,9 @@ async def test_structured_shell_streams_separately_and_returns_status(
             "command": "printf out; printf err >&2; exit 7",
         }
     )
-    async with asyncssh.connect(**connection_config.asdict, known_hosts=None) as conn:
+    async with asyncssh.connect(
+        **connection_config.ssh_options, known_hosts=None
+    ) as conn:
         result = await conn.run(
             SHELL_COMMAND,
             check=True,
@@ -494,7 +503,9 @@ async def test_structured_shell_streams_separately_and_returns_status(
 async def test_structured_shell_rejects_invalid_request(
     server_instance, connection_config
 ):
-    async with asyncssh.connect(**connection_config.asdict, known_hosts=None) as conn:
+    async with asyncssh.connect(
+        **connection_config.ssh_options, known_hosts=None
+    ) as conn:
         result = await conn.run(SHELL_COMMAND, check=True, input="{")
 
     assert result.stdout == ""
@@ -503,7 +514,9 @@ async def test_structured_shell_rejects_invalid_request(
 
 @pytest.mark.asyncio
 async def test_global_variable_available(server_instance, connection_config):
-    async with asyncssh.connect(**connection_config.asdict, known_hosts=None) as conn:
+    async with asyncssh.connect(
+        **connection_config.ssh_options, known_hosts=None
+    ) as conn:
         result = await conn.run(
             "code", check=True, input="print(test_variable_in_namespace)"
         )
@@ -513,7 +526,9 @@ async def test_global_variable_available(server_instance, connection_config):
 
 @pytest.mark.asyncio
 async def test_value_command_returns_simple_value(server_instance, connection_config):
-    async with asyncssh.connect(**connection_config.asdict, known_hosts=None) as conn:
+    async with asyncssh.connect(
+        **connection_config.ssh_options, known_hosts=None
+    ) as conn:
         result = await conn.run(VALUE_COMMAND, check=True, input="1 + 1")
         assert loads_value(result.stdout) == 2
 
@@ -522,7 +537,9 @@ async def test_value_command_returns_simple_value(server_instance, connection_co
 async def test_value_command_captures_expression_stdout(
     server_instance, connection_config
 ):
-    async with asyncssh.connect(**connection_config.asdict, known_hosts=None) as conn:
+    async with asyncssh.connect(
+        **connection_config.ssh_options, known_hosts=None
+    ) as conn:
         result = await conn.run(
             VALUE_COMMAND,
             check=True,
@@ -535,7 +552,9 @@ async def test_value_command_captures_expression_stdout(
 
 @pytest.mark.asyncio
 async def test_value_command_uses_same_namespace(server_instance, connection_config):
-    async with asyncssh.connect(**connection_config.asdict, known_hosts=None) as conn:
+    async with asyncssh.connect(
+        **connection_config.ssh_options, known_hosts=None
+    ) as conn:
         await conn.run(CODE_COMMAND, check=True, input="value_command_var = (2, 3)")
         result = await conn.run(
             VALUE_COMMAND,
@@ -550,7 +569,9 @@ async def test_put_command_binds_value_in_live_namespace(
     server_instance, connection_config
 ):
     value = {"ids": ["a", "b"], "raw": b"data"}
-    async with asyncssh.connect(**connection_config.asdict, known_hosts=None) as conn:
+    async with asyncssh.connect(
+        **connection_config.ssh_options, known_hosts=None
+    ) as conn:
         result = await conn.run(
             PUT_COMMAND,
             check=True,
@@ -566,7 +587,9 @@ async def test_put_command_binds_value_in_live_namespace(
 async def test_put_command_does_not_assign_on_invalid_request(
     server_instance, connection_config
 ):
-    async with asyncssh.connect(**connection_config.asdict, known_hosts=None) as conn:
+    async with asyncssh.connect(
+        **connection_config.ssh_options, known_hosts=None
+    ) as conn:
         await conn.run(CODE_COMMAND, check=True, input="put_atomic = 'before'")
         result = await conn.run(PUT_COMMAND, check=True, input="{")
         fetched = await conn.run(VALUE_COMMAND, check=True, input="put_atomic")
@@ -578,7 +601,9 @@ async def test_put_command_does_not_assign_on_invalid_request(
 
 @pytest.mark.asyncio
 async def test_value_command_returns_remote_error(server_instance, connection_config):
-    async with asyncssh.connect(**connection_config.asdict, known_hosts=None) as conn:
+    async with asyncssh.connect(
+        **connection_config.ssh_options, known_hosts=None
+    ) as conn:
         result = await conn.run(VALUE_COMMAND, check=True, input="missing_name")
 
     with pytest.raises(RemoteValueError, match="NameError"):
@@ -587,7 +612,9 @@ async def test_value_command_returns_remote_error(server_instance, connection_co
 
 @pytest.mark.asyncio
 async def test_value_command_awaits_coroutine(server_instance, connection_config):
-    async with asyncssh.connect(**connection_config.asdict, known_hosts=None) as conn:
+    async with asyncssh.connect(
+        **connection_config.ssh_options, known_hosts=None
+    ) as conn:
         await conn.run(
             "code",
             check=True,
@@ -605,7 +632,9 @@ async def test_value_command_awaits_coroutine(server_instance, connection_config
 async def test_value_command_captures_awaitable_stdout(
     server_instance, connection_config
 ):
-    async with asyncssh.connect(**connection_config.asdict, known_hosts=None) as conn:
+    async with asyncssh.connect(
+        **connection_config.ssh_options, known_hosts=None
+    ) as conn:
         await conn.run(
             "code",
             check=True,
@@ -628,7 +657,9 @@ async def test_background_value_runs_in_worker_and_returns_value(
     server_instance, connection_config
 ):
     event_loop_thread = threading.get_ident()
-    async with asyncssh.connect(**connection_config.asdict, known_hosts=None) as conn:
+    async with asyncssh.connect(
+        **connection_config.ssh_options, known_hosts=None
+    ) as conn:
         result = await conn.run(
             BACKGROUND_VALUE_COMMAND,
             check=True,
@@ -648,7 +679,9 @@ async def test_background_value_runs_in_worker_and_returns_value(
 async def test_background_value_preserves_errors_and_awaitable_output_capture(
     server_instance, connection_config
 ):
-    async with asyncssh.connect(**connection_config.asdict, known_hosts=None) as conn:
+    async with asyncssh.connect(
+        **connection_config.ssh_options, known_hosts=None
+    ) as conn:
         await conn.run(
             CODE_COMMAND,
             check=True,
@@ -695,7 +728,7 @@ async def test_background_awaitable_output_is_isolated_from_overlapping_value(
     leaked_output = StringIO()
     with contextlib.redirect_stdout(leaked_output):
         async with asyncssh.connect(
-            **connection_config.asdict,
+            **connection_config.ssh_options,
             known_hosts=None,
         ) as conn:
             background = asyncio.create_task(
@@ -727,7 +760,9 @@ async def test_background_awaitable_output_is_isolated_from_overlapping_value(
 async def test_namespace_variable_updated(
     server_instance, connection_config, tmp_environ
 ):
-    async with asyncssh.connect(**connection_config.asdict, known_hosts=None) as conn:
+    async with asyncssh.connect(
+        **connection_config.ssh_options, known_hosts=None
+    ) as conn:
         result = await conn.run(
             "code", check=True, input="print(test_global_variable_updated_var)"
         )
@@ -748,7 +783,9 @@ async def test_namespace_variable_updated(
 async def test_structured_execute_streams_output_and_reports_success(
     server_instance, connection_config
 ):
-    async with asyncssh.connect(**connection_config.asdict, known_hosts=None) as conn:
+    async with asyncssh.connect(
+        **connection_config.ssh_options, known_hosts=None
+    ) as conn:
         result = await conn.run(
             "execute-v1",
             check=True,
@@ -775,7 +812,9 @@ async def test_structured_execute_streams_output_and_reports_success(
 async def test_structured_execute_reports_remote_exception(
     server_instance, connection_config
 ):
-    async with asyncssh.connect(**connection_config.asdict, known_hosts=None) as conn:
+    async with asyncssh.connect(
+        **connection_config.ssh_options, known_hosts=None
+    ) as conn:
         result = await conn.run(
             "execute-v1",
             check=True,
@@ -801,7 +840,9 @@ async def test_execute_commands_read_input_larger_than_64_kib_through_eof(
     command,
 ):
     code = "#" * (64 * 1024) + "\nlarge_run_input_complete = True"
-    async with asyncssh.connect(**connection_config.asdict, known_hosts=None) as conn:
+    async with asyncssh.connect(
+        **connection_config.ssh_options, known_hosts=None
+    ) as conn:
         result = await conn.run(command, check=True, input=code)
         value_result = await conn.run(
             VALUE_COMMAND,
@@ -826,7 +867,9 @@ async def test_value_commands_read_input_larger_than_64_kib_through_eof(
 ):
     value = "x" * (64 * 1024)
     expression = f"len({value!r})"
-    async with asyncssh.connect(**connection_config.asdict, known_hosts=None) as conn:
+    async with asyncssh.connect(
+        **connection_config.ssh_options, known_hosts=None
+    ) as conn:
         result = await conn.run(command, check=True, input=expression)
 
     assert loads_value(result.stdout) == len(value)
@@ -837,7 +880,9 @@ async def test_background_execute_discards_output_and_runs_in_worker(
     server_instance, connection_config
 ):
     event_loop_thread = threading.get_ident()
-    async with asyncssh.connect(**connection_config.asdict, known_hosts=None) as conn:
+    async with asyncssh.connect(
+        **connection_config.ssh_options, known_hosts=None
+    ) as conn:
         result = await conn.run(
             BACKGROUND_EXECUTE_COMMAND,
             check=True,
@@ -864,7 +909,9 @@ async def test_background_execute_discards_output_and_runs_in_worker(
 async def test_background_execute_preserves_structured_exception(
     server_instance, connection_config
 ):
-    async with asyncssh.connect(**connection_config.asdict, known_hosts=None) as conn:
+    async with asyncssh.connect(
+        **connection_config.ssh_options, known_hosts=None
+    ) as conn:
         result = await conn.run(
             BACKGROUND_EXECUTE_COMMAND,
             check=True,
@@ -884,7 +931,9 @@ async def test_worker_execute_buffers_ordered_output_and_runs_off_main(
     server_instance, connection_config
 ):
     event_loop_thread = threading.get_ident()
-    async with asyncssh.connect(**connection_config.asdict, known_hosts=None) as conn:
+    async with asyncssh.connect(
+        **connection_config.ssh_options, known_hosts=None
+    ) as conn:
         result = await conn.run(
             WORKER_EXECUTE_COMMAND,
             check=True,
@@ -917,7 +966,9 @@ async def test_worker_execute_buffers_ordered_output_and_runs_off_main(
 async def test_worker_execute_replays_output_before_error_and_survives_failure(
     server_instance, connection_config
 ):
-    async with asyncssh.connect(**connection_config.asdict, known_hosts=None) as conn:
+    async with asyncssh.connect(
+        **connection_config.ssh_options, known_hosts=None
+    ) as conn:
         failed = await conn.run(
             WORKER_EXECUTE_COMMAND,
             check=True,
@@ -949,7 +1000,9 @@ async def test_worker_execute_replays_output_before_error_and_survives_failure(
 async def test_worker_execute_bounds_unicode_output_and_finishes_execution(
     server_instance, connection_config
 ):
-    async with asyncssh.connect(**connection_config.asdict, known_hosts=None) as conn:
+    async with asyncssh.connect(
+        **connection_config.ssh_options, known_hosts=None
+    ) as conn:
         result = await conn.run(
             WORKER_EXECUTE_COMMAND,
             check=True,
@@ -1007,7 +1060,9 @@ async def test_background_wait_keeps_foreground_server_responsive(
         background_test_release=release,
         background_test_started=started,
     )
-    async with asyncssh.connect(**connection_config.asdict, known_hosts=None) as conn:
+    async with asyncssh.connect(
+        **connection_config.ssh_options, known_hosts=None
+    ) as conn:
         waiting = asyncio.create_task(
             conn.run(
                 BACKGROUND_VALUE_COMMAND,
@@ -1030,7 +1085,9 @@ async def test_background_wait_keeps_foreground_server_responsive(
 async def test_concurrent_background_execute_responses_remain_separate(
     server_instance, connection_config
 ):
-    async with asyncssh.connect(**connection_config.asdict, known_hosts=None) as conn:
+    async with asyncssh.connect(
+        **connection_config.ssh_options, known_hosts=None
+    ) as conn:
         first, second = await asyncio.gather(
             conn.run(
                 BACKGROUND_EXECUTE_COMMAND,
@@ -1062,7 +1119,7 @@ async def test_background_worker_may_finish_after_client_disconnect(
         disconnect_test_release=release,
         disconnect_test_finished=finished,
     )
-    conn = await asyncssh.connect(**connection_config.asdict, known_hosts=None)
+    conn = await asyncssh.connect(**connection_config.ssh_options, known_hosts=None)
     try:
         process = await conn.create_process(BACKGROUND_EXECUTE_COMMAND)
         process.stdin.write(
@@ -1081,7 +1138,9 @@ async def test_background_worker_may_finish_after_client_disconnect(
         release.set()
 
     assert await asyncio.to_thread(finished.wait, 1)
-    async with asyncssh.connect(**connection_config.asdict, known_hosts=None) as check:
+    async with asyncssh.connect(
+        **connection_config.ssh_options, known_hosts=None
+    ) as check:
         pong = await check.run(PING_COMMAND, check=True)
     assert pong.stdout == "pong"
 
@@ -1092,7 +1151,9 @@ async def test_recent_logs_command_returns_ordered_snapshot(
 ):
     marker_one = "recent-log-one"
     marker_two = "recent-log-two"
-    async with asyncssh.connect(**connection_config.asdict, known_hosts=None) as conn:
+    async with asyncssh.connect(
+        **connection_config.ssh_options, known_hosts=None
+    ) as conn:
         await conn.run(
             "execute-v1",
             check=True,
@@ -1160,7 +1221,9 @@ def test_decode_recent_logs_request_rejects_invalid_input(request_text):
 async def test_recent_logs_command_rejects_invalid_request(
     server_instance, connection_config
 ):
-    async with asyncssh.connect(**connection_config.asdict, known_hosts=None) as conn:
+    async with asyncssh.connect(
+        **connection_config.ssh_options, known_hosts=None
+    ) as conn:
         result = await conn.run(RECENT_LOGS_COMMAND, input="{", check=True)
 
     assert result.stdout == ""
@@ -1173,7 +1236,9 @@ async def test_recent_logs_command_rejects_oversized_request(
     connection_config,
 ):
     request = " " * (MAX_RECENT_LOGS_REQUEST_BYTES + 1)
-    async with asyncssh.connect(**connection_config.asdict, known_hosts=None) as conn:
+    async with asyncssh.connect(
+        **connection_config.ssh_options, known_hosts=None
+    ) as conn:
         result = await conn.run(RECENT_LOGS_COMMAND, input=request, check=True)
 
     assert result.stdout == ""
@@ -1195,19 +1260,74 @@ async def test_sftp_file_uploaded(
 
 
 @pytest.mark.asyncio
-async def test_new_key_generated_if_not_exist(tmpdir, server_config, connection_config):
+async def test_new_key_generated_without_hard_links(
+    tmpdir, server_config, connection_config, mocker
+):
     path = Path(tmpdir) / "ssh_host_key"
     assert not os.path.exists(path)
     server_config.key_path = path
+    link = mocker.patch(
+        "herethere.here.server.os.link",
+        side_effect=PermissionError("hard links unavailable"),
+    )
 
     server_instance = await start_server(server_config)
 
     try:
         assert os.path.exists(path)
         assert asyncssh.read_private_key(path).get_algorithm() == "ssh-ed25519"
+        assert server_instance.host_key_sha256 == get_server_host_key_fingerprint(path)
         assert server_instance.is_serving()
-        async with asyncssh.connect(**connection_config.asdict, known_hosts=None):
+        async with asyncssh.connect(**connection_config.ssh_options, known_hosts=None):
             pass
+    finally:
+        await server_instance.stop()
+    link.assert_not_called()
+
+
+def test_host_key_fingerprint_helper_reuses_persistent_key(tmp_path):
+    path = tmp_path / "host-key"
+    asyncssh.generate_private_key("ssh-ed25519").write_private_key(path)
+
+    first = get_server_host_key_fingerprint(path)
+    contents = path.read_bytes()
+    second = get_server_host_key_fingerprint(path)
+
+    assert first.startswith("SHA256:")
+    assert second == first
+    assert path.read_bytes() == contents
+    assert asyncssh.read_private_key(path).get_fingerprint("sha256") == first
+
+
+def test_host_key_helper_rejects_invalid_existing_key(tmp_path):
+    path = tmp_path / "host-key"
+    path.write_text("invalid", encoding="utf-8")
+
+    with pytest.raises(asyncssh.KeyImportError):
+        get_server_host_key_fingerprint(path)
+    assert path.read_text(encoding="utf-8") == "invalid"
+
+
+def test_host_key_fingerprint_helper_does_not_create_missing_key(tmp_path):
+    path = tmp_path / "host-key"
+
+    with pytest.raises(FileNotFoundError):
+        get_server_host_key_fingerprint(path)
+    assert not path.exists()
+
+
+@pytest.mark.asyncio
+async def test_running_server_reports_and_logs_active_fingerprint(
+    caplog, server_config
+):
+    with caplog.at_level(logging.INFO, logger="herethere"):
+        server_instance = await start_server(server_config)
+    try:
+        expected = asyncssh.read_private_key(server_config.key_path).get_fingerprint(
+            "sha256"
+        )
+        assert server_instance.host_key_sha256 == expected
+        assert caplog.messages.count(f"SSH host key: {expected}") == 1
     finally:
         await server_instance.stop()
 
@@ -1228,7 +1348,7 @@ async def test_custom_server_class_used(server_config, connection_config):
         server_factory=CustomSSHServerHere,
     )
     try:
-        async with asyncssh.connect(**connection_config.asdict, known_hosts=None):
+        async with asyncssh.connect(**connection_config.ssh_options, known_hosts=None):
             pass
     finally:
         await server_instance.stop()
