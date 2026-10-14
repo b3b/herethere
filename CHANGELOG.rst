@@ -1,6 +1,14 @@
 Changelog
 =========
 
+0.3.3
+-----
+
+* Added optional SSH server host-key verification with ``THERE_HOST_KEY_SHA256``
+  and a server fingerprint API
+* Added ``%there put`` and ``Client.put()`` for transferring local Python values
+  into the remote live namespace
+
 0.3.2
 -----
 
